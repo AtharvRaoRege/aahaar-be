@@ -1,0 +1,14 @@
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.env.local
+.clerk.keys.env
+*.sqlite3
+*.db
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+*.log

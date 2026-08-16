@@ -1,0 +1,9 @@
+Alembic migrations for the Aahaar backend.
+
+The database URL is loaded from application settings (app.core.config), so run
+Alembic with the same environment as the app:
+
+    alembic upgrade head
+    alembic revision --autogenerate -m "describe change"
+
+All schema changes MUST go through a migration (see database.md §12).

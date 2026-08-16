@@ -1,0 +1,50 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aahaar
+      POSTGRES_PASSWORD: aahaar
+      POSTGRES_DB: aahaar
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aahaar -d aahaar"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      ENVIRONMENT: development
+      DEBUG: "true"
+      DATABASE_URL: postgresql+asyncpg://aahaar:aahaar@db:5432/aahaar
+      CORS_ORIGINS: "http://localhost:5173,http://localhost:5174,http://localhost:5175"
+      CUSTOMER_APP_BASE_URL: "http://localhost:5174"
+      SEED_ON_START: "true"
+      REDIS_URL: ""
+      CLERK_AUTHORIZED_PARTIES: "http://localhost:5173,http://localhost:5174,http://localhost:5175"
+    ports:
+      - "8001:8000"
+
+  # Optional lightweight DB UI: `docker compose --profile tools up adminer`
+  adminer:
+    image: adminer:latest
+    restart: unless-stopped
+    profiles: ["tools"]
+    depends_on:
+      - db
+    ports:
+      - "8080:8080"
+
+volumes:
+  pgdata:

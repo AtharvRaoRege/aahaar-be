@@ -1,0 +1,41 @@
+name: Codecheck
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codecheck-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  codecheck:
+    name: Lint and compile
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install
+        run: pip install -r requirements-dev.txt
+
+      - name: Ruff
+        run: ruff check app scripts migrations/env.py
+
+      - name: Format
+        run: ruff format --check app scripts migrations/env.py
+
+      - name: Compile
+        run: python -m compileall -q app scripts
