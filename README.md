@@ -1,5 +1,7 @@
 # Aahaar — Backend (FastAPI)
 
+Product overview and feature list: **[../README.md](../README.md)** · **[../docs/features/](../docs/features/README.md)**.
+
 Multi-tenant **restaurant / cafe QR ordering** platform. Customers scan a QR,
 browse a mobile-first menu, and place orders; restaurant staff receive them in
 real time and drive them through the preparation lifecycle.
@@ -130,8 +132,8 @@ Rooms: `restaurant:{id}` (staff dashboard, JWT-verified) and `order:{id}` (custo
 |-------|-----------|------|
 | `order:created` | → restaurant | new order placed |
 | `order:accepted` / `order:rejected` | → order | staff decision |
-| `order:status_updated` | → order | status change |
-| `order:updated` | → restaurant | dashboard list refresh signal |
+| `order:status_updated` | → order | status change, or same-table items added |
+| `order:updated` | → restaurant | list refresh; `itemsAdded` when extras land on an open ticket |
 
 Client join messages: `join_restaurant {restaurantId}` (auth required),
 `join_order {orderId}`.

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
+from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
-from app.models.enums import OrderStatus
+from app.models.enums import ACTIVE_STATUSES, OrderStatus
 from app.models.order import Order
 from app.repositories.base import BaseRepository
 
@@ -18,6 +19,7 @@ class OrderRepository(BaseRepository[Order]):
         selectinload(Order.items),
         selectinload(Order.status_history),
         selectinload(Order.customer_session),
+        selectinload(Order.review),
     )
 
     async def get_with_relations(self, order_id: uuid.UUID) -> Order | None:
@@ -38,6 +40,53 @@ class OrderRepository(BaseRepository[Order]):
             )
         )
         return int(result.scalar_one()) + 1
+
+    async def get_open_for_place(
+        self,
+        restaurant_id: uuid.UUID,
+        *,
+        table_number: str | None,
+        room_number: str | None,
+        session_id: uuid.UUID,
+    ) -> Order | None:
+        """Latest ticket that is still open for this table, room, or session."""
+        conditions = [
+            Order.restaurant_id == restaurant_id,
+            Order.status.in_(list(ACTIVE_STATUSES)),
+        ]
+        if table_number:
+            conditions.append(Order.table_number == table_number)
+        elif room_number:
+            conditions.append(Order.room_number == room_number)
+        else:
+            conditions.append(Order.customer_session_id == session_id)
+
+        result = await self.session.execute(
+            select(Order)
+            .where(*conditions)
+            .options(*self._relations)
+            .order_by(Order.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def list_stale_active(self, restaurant_id: uuid.UUID, cutoff: datetime) -> list[Order]:
+        """Active tickets untouched since ``cutoff`` — nobody is coming back for these.
+
+        ``updated_at`` keeps a long table that is still adding items out of the sweep.
+        """
+        result = await self.session.execute(
+            select(Order)
+            .where(
+                Order.restaurant_id == restaurant_id,
+                Order.status.in_(list(ACTIVE_STATUSES)),
+                Order.created_at < cutoff,
+                Order.updated_at < cutoff,
+            )
+            .options(*self._relations)
+            .order_by(Order.created_at.asc())
+        )
+        return list(result.scalars().all())
 
     async def get_by_idempotency_key(self, restaurant_id: uuid.UUID, key: str) -> Order | None:
         result = await self.session.execute(

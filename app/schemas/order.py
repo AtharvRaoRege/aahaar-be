@@ -76,5 +76,6 @@ class OrderResponse(CamelModel):
     created_at: datetime
     updated_at: datetime
     customer: OrderCustomerInfo | None = None
+    reviewed: bool = False
     items: list[OrderItemResponse] = Field(default_factory=list)
     status_history: list[OrderStatusHistoryResponse] = Field(default_factory=list)

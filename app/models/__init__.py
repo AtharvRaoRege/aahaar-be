@@ -5,7 +5,7 @@ Alembic autogeneration and ``create_all`` can see the full schema.
 """
 
 from app.models.customer_session import CustomerSession
-from app.models.enums import OrderStatus, UserRole
+from app.models.enums import OrderStatus, QrKind, UserRole
 from app.models.menu import (
     Category,
     MenuItem,
@@ -13,8 +13,10 @@ from app.models.menu import (
     MenuItemVariant,
 )
 from app.models.order import Order, OrderItem, OrderStatusHistory
+from app.models.push_subscription import PushSubscription
 from app.models.qr_code import QrCode
 from app.models.restaurant import Restaurant
+from app.models.review import Review
 from app.models.tenant import Tenant
 from app.models.user import RefreshToken, User
 
@@ -28,9 +30,12 @@ __all__ = [
     "OrderItem",
     "OrderStatus",
     "OrderStatusHistory",
+    "PushSubscription",
     "QrCode",
+    "QrKind",
     "RefreshToken",
     "Restaurant",
+    "Review",
     "Tenant",
     "User",
     "UserRole",

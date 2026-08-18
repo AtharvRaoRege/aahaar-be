@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ForbiddenError, NotFoundError
+from app.core.errors import ConflictError, ForbiddenError, NotFoundError
 from app.models.menu import Category, MenuItem, MenuItemAddon, MenuItemVariant
 from app.repositories.menu import CategoryRepository, MenuItemRepository
 from app.repositories.restaurant import RestaurantRepository
@@ -101,10 +101,18 @@ class MenuService:
     async def create_category(
         self, restaurant_id: uuid.UUID, payload: CreateCategoryRequest
     ) -> Category:
+        name = payload.name.strip()
+        existing = await self.categories.list_by_restaurant(restaurant_id)
+        taken = {" ".join(category.name.split()).casefold() for category in existing}
+        if " ".join(name.split()).casefold() in taken:
+            raise ConflictError("A category with that name already exists.")
+        sort_order = payload.sort_order
+        if sort_order == 0:
+            sort_order = max((category.sort_order for category in existing), default=-1) + 1
         category = Category(
             restaurant_id=restaurant_id,
-            name=payload.name,
-            sort_order=payload.sort_order,
+            name=name,
+            sort_order=sort_order,
             is_active=payload.is_active,
         )
         self.session.add(category)

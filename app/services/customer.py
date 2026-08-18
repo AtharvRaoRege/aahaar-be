@@ -51,10 +51,15 @@ class CustomerService:
         if not table:
             raise ValidationError("A table number is required.", code="TABLE_REQUIRED")
 
+        name = (payload.name or "").strip()
+        if not name:
+            raise ValidationError("A guest name is required.", code="NAME_REQUIRED")
+        contact = (payload.contact_number or "").strip() or None
+
         customer_session = CustomerSession(
             restaurant_id=restaurant.id,
-            name=(payload.name or "").strip() or f"Table {table}",
-            contact_number=payload.contact_number,
+            name=name,
+            contact_number=contact[:32] if contact else None,
             guest_count=payload.guest_count,
             table_number=table,
             room_number=payload.room_number,

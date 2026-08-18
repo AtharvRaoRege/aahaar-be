@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Response, status
 
 from app.dependencies.db import DBSession
 from app.dependencies.rate_limit import rate_limit
@@ -12,9 +12,11 @@ from app.schemas.customer import (
     CustomerSessionResponse,
 )
 from app.schemas.menu import MenuResponse
+from app.schemas.order import OrderResponse
 from app.schemas.restaurant import PublicRestaurantResponse
 from app.services.customer import CustomerService
 from app.services.menu import MenuService
+from app.services.order import OrderService
 
 router = APIRouter(prefix="/public", tags=["public"])
 
@@ -49,3 +51,18 @@ async def create_customer_session(
 async def get_customer_session(session_id: uuid.UUID, db: DBSession) -> CustomerSessionResponse:
     session = await CustomerService(db).get_session(session_id)
     return CustomerSessionResponse.model_validate(session)
+
+
+@router.get(
+    "/customer-sessions/{session_id}/open-order",
+    response_model=OrderResponse,
+    responses={204: {"description": "No open order for this table"}},
+)
+async def get_open_order_for_session(
+    session_id: uuid.UUID,
+    db: DBSession,
+) -> OrderResponse | Response:
+    order = await OrderService(db).get_open_for_session(session_id)
+    if order is None:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return order

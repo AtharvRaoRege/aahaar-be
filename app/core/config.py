@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api/v1"
 
     # Database
-    database_url: str = "postgresql+asyncpg://aahaar:aahaar@localhost:5432/aahaar"
+    database_url: str = "postgresql+asyncpg://aahaar:aahaar@localhost:5433/aahaar"
 
     # Security / JWT
     secret_key: str = "change-me-in-production-please-use-a-long-random-string"
@@ -88,6 +88,10 @@ class Settings(BaseSettings):
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""
     twilio_whatsapp_from: str = ""
+
+    # Web Push (optional PEM). Empty = derive a stable key from SECRET_KEY.
+    vapid_private_key: str = ""
+    vapid_contact: str = "mailto:hello@aahaar.app"
 
     # Rate limiting rules (raw "count/window" strings from env)
     rate_limit_login: str = "10/60"

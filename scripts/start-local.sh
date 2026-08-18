@@ -93,7 +93,6 @@ section "Starting FastAPI"
 echo "API:   http://localhost:${API_PORT}"
 echo "Docs:  http://localhost:${API_PORT}/docs"
 echo "Health: http://localhost:${API_PORT}/health"
-echo "Demo:   owner@aahaar.app / Password123!"
 echo
 
 set +e

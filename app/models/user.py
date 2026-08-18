@@ -13,6 +13,7 @@ from app.models.base import TimestampMixin, UUIDMixin
 from app.models.enums import ApprovalStatus, UserRole
 
 if TYPE_CHECKING:
+    from app.models.push_subscription import PushSubscription
     from app.models.tenant import Tenant
 
 
@@ -49,6 +50,9 @@ class User(UUIDMixin, TimestampMixin, Base):
 
     tenant: Mapped[Tenant] = relationship(back_populates="users")
     refresh_tokens: Mapped[list[RefreshToken]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    push_subscriptions: Mapped[list[PushSubscription]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
 

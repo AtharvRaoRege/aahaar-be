@@ -23,6 +23,11 @@ class VenueKind(enum.StrEnum):
     CAFE = "CAFE"
 
 
+class QrKind(enum.StrEnum):
+    TABLE = "TABLE"
+    REVIEW = "REVIEW"
+
+
 class OrderStatus(enum.StrEnum):
     PENDING = "PENDING"
     ACCEPTED = "ACCEPTED"

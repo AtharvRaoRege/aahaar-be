@@ -29,6 +29,7 @@ from app.models.enums import OrderStatus
 if TYPE_CHECKING:
     from app.models.customer_session import CustomerSession
     from app.models.restaurant import Restaurant
+    from app.models.review import Review
 
 
 class Order(UUIDMixin, TimestampMixin, Base):
@@ -73,6 +74,7 @@ class Order(UUIDMixin, TimestampMixin, Base):
         cascade="all, delete-orphan",
         order_by="OrderStatusHistory.created_at",
     )
+    review: Mapped[Review | None] = relationship(back_populates="order", uselist=False)
 
 
 class OrderItem(UUIDMixin, Base):

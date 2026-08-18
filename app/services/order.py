@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -39,9 +40,37 @@ logger = get_logger("aahaar.orders")
 
 _TWO_PLACES = Decimal("0.01")
 
+# Tickets left open this long are stale: the table has long since left.
+STALE_ORDER_HOURS = 2
+
 
 def _money(value: Decimal | int | float | str) -> Decimal:
     return Decimal(str(value)).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
+
+
+def _join_notes(current: str | None, extra: str | None) -> str | None:
+    incoming = (extra or "").strip()
+    existing = (current or "").strip()
+    if not incoming:
+        return current
+    if not existing:
+        return incoming[:500]
+    if incoming in existing:
+        return existing
+    return f"{existing}\n{incoming}"[:500]
+
+
+def _line_key(item: OrderItem) -> tuple[str, str, tuple[str, ...], str]:
+    variant = ""
+    if isinstance(item.variant_snapshot, dict):
+        variant = str(item.variant_snapshot.get("id") or "")
+    addons: list[str] = []
+    if isinstance(item.addon_snapshot, list):
+        for addon in item.addon_snapshot:
+            if isinstance(addon, dict):
+                addons.append(str(addon.get("id") or ""))
+    menu_id = str(item.menu_item_id) if item.menu_item_id else item.name_snapshot
+    return (menu_id, variant, tuple(sorted(addons)), (item.notes or "").strip())
 
 
 class OrderService:
@@ -51,7 +80,7 @@ class OrderService:
         self.items = MenuItemRepository(session)
         self.sessions = CustomerSessionRepository(session)
         self.restaurants = RestaurantRepository(session)
-        self.notifier = notifier or NotificationService()
+        self.notifier = notifier or NotificationService(session)
 
     # ── Creation (public, transactional) ─────────────────────
     async def create_order(
@@ -77,14 +106,32 @@ class OrderService:
         menu_index = await self._load_menu_index(payload, restaurant.id)
         order_items, subtotal = self._build_items(payload.items, menu_index)
 
+        # Sweep before locking below: the sweep commits, which would drop the lock.
+        await self.auto_close_stale(restaurant.id)
+
         discount = _money(0)
         tax = _money(0)
         total = _money(subtotal - discount + tax)
 
-        # Lock the restaurant row so concurrent orders get distinct numbers.
+        # Lock the restaurant row so concurrent orders get distinct numbers
+        # and so a second ticket for the same open table cannot race a new card.
         await self.session.execute(
             select(Restaurant.id).where(Restaurant.id == restaurant.id).with_for_update()
         )
+        open_order = await self.orders.get_open_for_place(
+            restaurant.id,
+            table_number=customer_session.table_number,
+            room_number=customer_session.room_number,
+            session_id=customer_session.id,
+        )
+        if open_order is not None:
+            return await self._append_to_order(
+                open_order,
+                order_items,
+                notes=payload.notes,
+                idempotency_key=idempotency_key,
+            )
+
         order_number = await self.orders.next_order_number(restaurant.id)
 
         order = Order(
@@ -213,6 +260,111 @@ class OrderService:
 
         return order_items, _money(subtotal)
 
+    async def _append_to_order(
+        self,
+        order: Order,
+        incoming: list[OrderItem],
+        *,
+        notes: str | None,
+        idempotency_key: str | None,
+    ) -> OrderResponse:
+        self._merge_items(order, incoming)
+        order.subtotal = _money(sum((item.subtotal for item in order.items), Decimal("0")))
+        order.total = _money(order.subtotal - order.discount + order.tax)
+        order.notes = _join_notes(order.notes, notes)
+        if idempotency_key:
+            order.idempotency_key = idempotency_key
+
+        if order.status in {OrderStatus.READY, OrderStatus.SERVED}:
+            old_status = order.status
+            order.status = OrderStatus.PREPARING
+            order.status_history.append(
+                OrderStatusHistory(
+                    old_status=old_status,
+                    new_status=OrderStatus.PREPARING,
+                    note="Guest added items",
+                )
+            )
+
+        try:
+            await self.session.commit()
+        except IntegrityError as exc:
+            await self.session.rollback()
+            if idempotency_key:
+                existing = await self.orders.get_by_idempotency_key(
+                    order.restaurant_id, idempotency_key
+                )
+                if existing is not None:
+                    loaded = await self.orders.get_with_relations(existing.id)
+                    assert loaded is not None
+                    return self._serialize(loaded)
+            raise ValidationError(
+                "Could not update this order. Try again.",
+                code="ORDER_CONFLICT",
+            ) from exc
+
+        updated = await self.orders.get_with_relations(order.id)
+        assert updated is not None
+        await self._safe_notify("items", updated)
+        return self._serialize(updated)
+
+    def _merge_items(self, order: Order, incoming: list[OrderItem]) -> None:
+        existing_by_key = {_line_key(item): item for item in order.items}
+        for line in incoming:
+            match = existing_by_key.get(_line_key(line))
+            if match is None:
+                order.items.append(line)
+                existing_by_key[_line_key(line)] = line
+                continue
+            match.quantity += line.quantity
+            match.subtotal = _money(match.price_snapshot * match.quantity)
+
+    # ── Stale sweep ──────────────────────────────────────────
+    async def auto_close_stale(self, restaurant_id: uuid.UUID) -> int:
+        """Close tickets nobody finished, so tables and dashboards start clean.
+
+        Runs opportunistically on reads instead of a scheduler, and bypasses
+        ``STATUS_TRANSITIONS`` because this is a system sweep, not a staff move.
+        """
+        cutoff = datetime.now(UTC) - timedelta(hours=STALE_ORDER_HOURS)
+        stale = await self.orders.list_stale_active(restaurant_id, cutoff)
+        if not stale:
+            return 0
+
+        for order in stale:
+            old_status = order.status
+            order.status = OrderStatus.COMPLETED
+            order.status_history.append(
+                OrderStatusHistory(
+                    old_status=old_status,
+                    new_status=OrderStatus.COMPLETED,
+                    note=f"Auto-closed after {STALE_ORDER_HOURS}h without completion",
+                )
+            )
+        await self.session.commit()
+
+        for order in stale:
+            refreshed = await self.orders.get_with_relations(order.id)
+            if refreshed is not None:
+                await self._safe_notify("status", refreshed)
+        return len(stale)
+
+    async def get_open_for_session(self, session_id: uuid.UUID) -> OrderResponse | None:
+        customer_session = await self.sessions.get(session_id)
+        if customer_session is None:
+            raise NotFoundError("Session not found.")
+        assert_session_active(customer_session)
+        await self.auto_close_stale(customer_session.restaurant_id)
+        order = await self.orders.get_open_for_place(
+            customer_session.restaurant_id,
+            table_number=customer_session.table_number,
+            room_number=customer_session.room_number,
+            session_id=customer_session.id,
+        )
+        if order is None:
+            return None
+        return self._serialize(order)
+
     # ── Reads ────────────────────────────────────────────────
     async def get_public_order(self, order_id: uuid.UUID) -> OrderResponse:
         order = await self.orders.get_with_relations(order_id)
@@ -232,6 +384,7 @@ class OrderService:
         active_only: bool,
         params: PageParams,
     ) -> Page[OrderResponse]:
+        await self.auto_close_stale(restaurant_id)
         effective = statuses
         if active_only and not statuses:
             effective = list(ACTIVE_STATUSES)
@@ -346,6 +499,8 @@ class OrderService:
         try:
             if kind == "created":
                 await self.notifier.order_created(order)
+            elif kind == "items":
+                await self.notifier.order_items_added(order)
             elif kind == "accepted":
                 await self.notifier.order_accepted(order)
             elif kind == "rejected":
@@ -399,6 +554,7 @@ class OrderService:
             created_at=order.created_at,
             updated_at=order.updated_at,
             customer=customer,
+            reviewed=order.review is not None,
             items=[OrderItemResponse.model_validate(i) for i in order.items],
             status_history=[
                 OrderStatusHistoryResponse.model_validate(h) for h in order.status_history

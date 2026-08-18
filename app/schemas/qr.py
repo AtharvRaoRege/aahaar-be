@@ -4,6 +4,7 @@ import uuid
 
 from pydantic import Field
 
+from app.models.enums import QrKind
 from app.schemas.common import CamelModel
 
 
@@ -19,3 +20,4 @@ class QrResponse(CamelModel):
     table_number: str | None
     target_url: str
     image_data_url: str
+    kind: QrKind = QrKind.TABLE

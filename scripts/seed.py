@@ -1,7 +1,7 @@
-"""Seed the database with a demo tenant, staff, restaurant, and menu.
+"""Seed the database with a demo restaurant and menu (no fake staff accounts).
 
-Idempotent: if the demo restaurant already exists, the script exits without
-changes. Run with::
+Idempotent: if the demo restaurant already exists, only leftover demo users
+are removed. Run with::
 
     python -m scripts.seed
 """
@@ -13,8 +13,6 @@ from decimal import Decimal
 
 from app.core.database import SessionFactory
 from app.core.logging import configure_logging, get_logger
-from app.core.security import hash_password
-from app.models.enums import UserRole
 from app.models.menu import Category, MenuItem
 from app.models.restaurant import Restaurant
 from app.models.tenant import Tenant
@@ -22,17 +20,16 @@ from app.models.user import User
 from app.schemas.qr import CreateQrRequest
 from app.services.qr import QRCodeService
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = get_logger("aahaar.seed")
 
 DEMO_SLUG = "spice-garden"
-DEMO_PASSWORD = "Password123!"
-
-STAFF = [
-    ("owner@aahaar.app", "Aarav Mehta", UserRole.OWNER),
-    ("reception@aahaar.app", "Priya Nair", UserRole.RECEPTION),
-    ("kitchen@aahaar.app", "Rahul Verma", UserRole.KITCHEN),
-]
+DEMO_USER_EMAILS = (
+    "owner@aahaar.app",
+    "reception@aahaar.app",
+    "kitchen@aahaar.app",
+)
 
 # (category, [(name, description, price, veg, vegan, spice)])
 MENU: dict[str, list[tuple[str, str, str, bool, bool, int]]] = {
@@ -71,29 +68,29 @@ MENU: dict[str, list[tuple[str, str, str, bool, bool, int]]] = {
 }
 
 
+async def remove_demo_users(db: AsyncSession) -> None:
+    result = await db.execute(select(User).where(User.email.in_(DEMO_USER_EMAILS)))
+    users = list(result.scalars())
+    for user in users:
+        await db.delete(user)
+    if users:
+        await db.commit()
+        logger.info("Removed %s demo staff accounts.", len(users))
+
+
 async def seed() -> None:
     configure_logging(debug=True)
     async with SessionFactory() as db:
+        await remove_demo_users(db)
+
         existing = await db.execute(select(Restaurant).where(Restaurant.slug == DEMO_SLUG))
         if existing.scalar_one_or_none() is not None:
-            logger.info("Demo data already present (%s). Nothing to do.", DEMO_SLUG)
+            logger.info("Demo restaurant already present (%s). Nothing to do.", DEMO_SLUG)
             return
 
         tenant = Tenant(name="Spice Garden Group", slug="spice-garden-group")
         db.add(tenant)
         await db.flush()
-
-        for email, name, role in STAFF:
-            db.add(
-                User(
-                    tenant_id=tenant.id,
-                    email=email,
-                    full_name=name,
-                    hashed_password=hash_password(DEMO_PASSWORD),
-                    role=role,
-                    is_active=True,
-                )
-            )
 
         restaurant = Restaurant(
             tenant_id=tenant.id,
@@ -135,9 +132,6 @@ async def seed() -> None:
         )
 
         logger.info("Seeded restaurant '%s' (slug=%s).", restaurant.name, DEMO_SLUG)
-        logger.info("Login with any of:")
-        for email, _, role in STAFF:
-            logger.info("  %-24s / %s  (%s)", email, DEMO_PASSWORD, role.value)
 
 
 if __name__ == "__main__":

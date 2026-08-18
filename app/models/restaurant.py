@@ -14,7 +14,9 @@ from app.models.enums import VenueKind
 if TYPE_CHECKING:
     from app.models.menu import Category, MenuItem
     from app.models.order import Order
+    from app.models.push_subscription import PushSubscription
     from app.models.qr_code import QrCode
+    from app.models.review import Review
     from app.models.tenant import Tenant
 
 
@@ -51,5 +53,11 @@ class Restaurant(UUIDMixin, TimestampMixin, Base):
     )
     orders: Mapped[list[Order]] = relationship(back_populates="restaurant")
     qr_codes: Mapped[list[QrCode]] = relationship(
+        back_populates="restaurant", cascade="all, delete-orphan"
+    )
+    reviews: Mapped[list[Review]] = relationship(
+        back_populates="restaurant", cascade="all, delete-orphan"
+    )
+    push_subscriptions: Mapped[list[PushSubscription]] = relationship(
         back_populates="restaurant", cascade="all, delete-orphan"
     )

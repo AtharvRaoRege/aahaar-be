@@ -24,6 +24,12 @@ async def create_qr(
     return QrResponse.model_validate(qr)
 
 
+@router.get("/review", response_model=QrResponse)
+async def get_review_qr(restaurant: OwnedRestaurant, db: DBSession) -> QrResponse:
+    qr = await QRCodeService(db).get_or_create_review_qr(restaurant.id, restaurant.tenant_id)
+    return QrResponse.model_validate(qr)
+
+
 @router.get("", response_model=list[QrResponse])
 async def list_qr(restaurant: OwnedRestaurant, db: DBSession) -> list[QrResponse]:
     codes = await QRCodeService(db).list_for_restaurant(restaurant.id, restaurant.tenant_id)
