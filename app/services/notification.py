@@ -1,7 +1,7 @@
-"""Emits realtime Socket.IO events after successful DB commits.
+"""Emits realtime events after successful DB commits.
 
-Payloads are kept small (realtime.md §6). Dashboards/customers always have a
-REST recovery path, so a dropped event never corrupts state.
+Uses Supabase Realtime (Postgres changes are auto-broadcast via the publication)
+plus Socket.IO as a fallback during migration. Web Push is still sent directly.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.logging import get_logger
 from app.models.order import Order
 from app.models.review import Review
+from app.models.waiter_call import WaiterCall
 from app.services.push import PushService
 from app.sockets.server import order_room, restaurant_room, sio
 
@@ -40,6 +41,18 @@ def _order_event_payload(order: Order) -> dict[str, Any]:
     }
 
 
+def _waiter_event_payload(call: WaiterCall) -> dict[str, Any]:
+    return {
+        "id": str(call.id),
+        "restaurantId": str(call.restaurant_id),
+        "tableNumber": call.table_number,
+        "status": call.status.value,
+        "createdAt": (call.created_at or datetime.now(UTC)).isoformat()
+        if call.created_at
+        else _iso_now(),
+    }
+
+
 def _review_event_payload(review: Review) -> dict[str, Any]:
     return {
         "reviewId": str(review.id),
@@ -51,7 +64,12 @@ def _review_event_payload(review: Review) -> dict[str, Any]:
 
 
 class NotificationService:
-    """Socket.IO plus Web Push after a successful commit."""
+    """Socket.IO (legacy) plus Web Push after a successful commit.
+
+    Supabase Realtime automatically picks up Postgres changes for tables added
+    to the `supabase_realtime` publication, so the frontend can migrate off
+    Socket.IO without backend changes.
+    """
 
     def __init__(self, session: AsyncSession | None = None) -> None:
         self.session = session
@@ -126,9 +144,7 @@ class NotificationService:
 
     async def order_status_changed(self, order: Order) -> None:
         payload = _order_event_payload(order)
-        # Customer tracking channel.
         await sio.emit("order:status_updated", payload, room=order_room(order.id))
-        # Dashboard list refresh signal.
         await sio.emit("order:updated", payload, room=restaurant_room(order.restaurant_id))
 
     async def order_accepted(self, order: Order) -> None:
@@ -144,6 +160,29 @@ class NotificationService:
             "order:updated",
             _order_event_payload(order),
             room=restaurant_room(order.restaurant_id),
+        )
+
+    async def waiter_called(self, call: WaiterCall) -> None:
+        payload = _waiter_event_payload(call)
+        await sio.emit("waiter:called", payload, room=restaurant_room(call.restaurant_id))
+        table = call.table_number or "Walk-in"
+        await self._push(
+            call.restaurant_id,
+            {
+                "type": "waiter",
+                "title": f"Waiter needed · Table {table}",
+                "body": "A guest asked for a waiter at this table.",
+                "url": "/dashboard/orders",
+                "tag": f"waiter:{call.id}",
+                "tableNumber": call.table_number,
+            },
+        )
+
+    async def waiter_acked(self, call: WaiterCall) -> None:
+        await sio.emit(
+            "waiter:acked",
+            _waiter_event_payload(call),
+            room=restaurant_room(call.restaurant_id),
         )
 
 

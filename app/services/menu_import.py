@@ -7,6 +7,8 @@ inside the background task so the request session is never reused.
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -76,6 +78,8 @@ class ImportRow:
     name: str
     category: str
     price: Decimal
+    description: str | None = None
+    is_vegetarian: bool = True
 
 
 @dataclass
@@ -159,6 +163,36 @@ def parse_xlsx(payload: bytes) -> list[ImportRow]:
         return parsed
     finally:
         workbook.close()
+
+
+def parse_csv(payload: bytes) -> list[ImportRow]:
+    try:
+        text = payload.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ValidationError("Could not read that CSV. Save it as UTF-8 and try again.") from exc
+
+    reader = csv.reader(io.StringIO(text))
+    header_row = next(reader, None)
+    if not header_row:
+        raise ValidationError("The CSV file is empty.")
+
+    name_idx, category_idx, price_idx = _header_indexes(tuple(header_row))
+    parsed: list[ImportRow] = []
+    for raw in reader:
+        if len(parsed) >= MAX_IMPORT_ROWS:
+            break
+        row = tuple(raw)
+        if _row_empty(row):
+            continue
+        name = _cell_text(_at(row, name_idx))
+        if not name:
+            continue
+        category = resolve_category_name(_cell_text(_at(row, category_idx)))
+        price = parse_price(_at(row, price_idx))
+        if price is None:
+            continue
+        parsed.append(ImportRow(name=name[:160], category=category, price=price))
+    return parsed
 
 
 def resolve_category_name(raw: str) -> str:

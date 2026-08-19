@@ -29,8 +29,24 @@ class UpdateOrderStatusRequest(CamelModel):
     note: str | None = Field(default=None, max_length=300)
 
 
+class AdvanceOrderRequest(CamelModel):
+    """Target stage for a single staff tap. The server walks the valid path."""
+
+    target: OrderStatus
+
+
 class RejectOrderRequest(CamelModel):
     note: str | None = Field(default=None, max_length=300)
+
+
+class OrderStageCounts(CamelModel):
+    """Exact ticket totals per working stage, for the orders screen tabs."""
+
+    new: int = 0
+    cooking: int = 0
+    ready: int = 0
+    closed: int = 0
+    all: int = 0
 
 
 class OrderItemResponse(CamelModel):

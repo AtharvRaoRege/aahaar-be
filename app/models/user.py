@@ -4,13 +4,14 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Uuid
+from sqlalchemy import Boolean, ColumnElement, DateTime, ForeignKey, String, Uuid
 from sqlalchemy import Enum as SAEnum
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 from app.models.base import TimestampMixin, UUIDMixin
-from app.models.enums import ApprovalStatus, UserRole
+from app.models.enums import ApprovalStatus, PlatformRole, UserRole
 
 if TYPE_CHECKING:
     from app.models.push_subscription import PushSubscription
@@ -39,13 +40,22 @@ class User(UUIDMixin, TimestampMixin, Base):
         nullable=False,
         index=True,
     )
-    is_super_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    platform_role: Mapped[PlatformRole] = mapped_column(
+        SAEnum(PlatformRole, native_enum=False, length=20),
+        default=PlatformRole.USER,
+        server_default=PlatformRole.USER.value,
+        nullable=False,
+        index=True,
+    )
     waitlist_notified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     session_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, default=uuid.uuid4, nullable=False, index=True
+    )
+    supabase_auth_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, unique=True, nullable=True, index=True
     )
 
     tenant: Mapped[Tenant] = relationship(back_populates="users")
@@ -55,6 +65,20 @@ class User(UUIDMixin, TimestampMixin, Base):
     push_subscriptions: Mapped[list[PushSubscription]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+
+    @hybrid_property
+    def is_super_admin(self) -> bool:
+        """Read-only view of ``platform_role``, for the many places that ask.
+
+        Kept as a hybrid so the same name works on a loaded row and inside a
+        query, and so nothing can set it independently of the role.
+        """
+        return self.platform_role == PlatformRole.SUPER_ADMIN
+
+    @is_super_admin.inplace.expression
+    @classmethod
+    def _is_super_admin_expression(cls) -> ColumnElement[bool]:
+        return cls.platform_role == PlatformRole.SUPER_ADMIN
 
 
 class RefreshToken(UUIDMixin, Base):

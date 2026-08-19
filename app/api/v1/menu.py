@@ -5,10 +5,13 @@ import uuid
 from fastapi import APIRouter, Depends, File, UploadFile, status
 from fastapi.responses import Response
 
+from app.core.plans import PlanFeature
 from app.dependencies.auth import require_roles
 from app.dependencies.db import DBSession
+from app.dependencies.plan import require_feature
 from app.dependencies.restaurant import OwnedRestaurant
 from app.models.enums import UserRole
+from app.models.restaurant import Restaurant
 from app.models.user import User
 from app.schemas.common import Message
 from app.schemas.menu import (
@@ -18,15 +21,24 @@ from app.schemas.menu import (
     ImportJobResponse,
     MenuItemResponse,
     MenuResponse,
+    SetUpsellsRequest,
     UpdateCategoryRequest,
     UpdateMenuItemRequest,
+    UpsellsResponse,
+)
+from app.schemas.menu_scan import (
+    ApplyMenuScanRequest,
+    ApplyMenuScanResponse,
+    MenuScanResponse,
 )
 from app.services import menu_import
 from app.services.menu import MenuService
+from app.services.menu_scan import MAX_UPLOAD_BYTES, MenuScanService
 
 router = APIRouter(tags=["menu"])
 
 _manager = require_roles(UserRole.OWNER, UserRole.MANAGER)
+_scan = require_feature(PlanFeature.MENU_SCAN)
 
 
 # ── Full menu (dashboard, all items) ─────────────────────────
@@ -169,3 +181,66 @@ async def delete_menu_item(
         menu_item_id, user.tenant_id, allow_cross_tenant=user.is_super_admin
     )
     return Message(message="Menu item deleted.")
+
+
+# ── Upsell pairings (Pro) ────────────────────────────────────
+@router.get("/menu-items/{menu_item_id}/upsells", response_model=UpsellsResponse)
+async def get_menu_item_upsells(
+    menu_item_id: uuid.UUID,
+    db: DBSession,
+    user: User = Depends(_manager),
+) -> UpsellsResponse:
+    return await MenuService(db).upsells_for_owner(
+        menu_item_id, user.tenant_id, allow_cross_tenant=user.is_super_admin
+    )
+
+
+@router.put("/menu-items/{menu_item_id}/upsells", response_model=UpsellsResponse)
+async def set_menu_item_upsells(
+    menu_item_id: uuid.UUID,
+    payload: SetUpsellsRequest,
+    db: DBSession,
+    user: User = Depends(_manager),
+) -> UpsellsResponse:
+    return await MenuService(db).set_upsells(
+        menu_item_id,
+        user.tenant_id,
+        payload,
+        allow_cross_tenant=user.is_super_admin,
+    )
+
+
+# ── Menu scanning (Pro) ──────────────────────────────────────
+@router.post(
+    "/restaurants/{restaurant_id}/menu/scan",
+    response_model=MenuScanResponse,
+)
+async def scan_menu_image(
+    db: DBSession,
+    restaurant: Restaurant = Depends(_scan),
+    file: UploadFile = File(...),
+    _: User = Depends(_manager),
+) -> MenuScanResponse:
+    """Read a menu photo or PDF into reviewable rows. Writes nothing."""
+    payload = await file.read(MAX_UPLOAD_BYTES + 1)
+    return await MenuScanService(db).scan(
+        restaurant.id,
+        file.filename or "",
+        file.content_type or "",
+        payload,
+    )
+
+
+@router.post(
+    "/restaurants/{restaurant_id}/menu/scan/apply",
+    response_model=ApplyMenuScanResponse,
+)
+async def apply_menu_scan(
+    payload: ApplyMenuScanRequest,
+    db: DBSession,
+    restaurant: Restaurant = Depends(_scan),
+    _: User = Depends(_manager),
+) -> ApplyMenuScanResponse:
+    """Write only the rows the owner approved (PRD §18: never auto-publish)."""
+    created, skipped = await MenuScanService(db).apply(restaurant.id, payload)
+    return ApplyMenuScanResponse(created=created, skipped=skipped)

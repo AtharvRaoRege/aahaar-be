@@ -6,7 +6,14 @@ from typing import TYPE_CHECKING
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ConflictError, ForbiddenError, NotFoundError
-from app.models.menu import Category, MenuItem, MenuItemAddon, MenuItemVariant
+from app.core.plans import PlanFeature, has_feature
+from app.models.menu import (
+    Category,
+    MenuItem,
+    MenuItemAddon,
+    MenuItemUpsell,
+    MenuItemVariant,
+)
 from app.repositories.menu import CategoryRepository, MenuItemRepository
 from app.repositories.restaurant import RestaurantRepository
 from app.schemas.menu import (
@@ -15,8 +22,11 @@ from app.schemas.menu import (
     MenuCategoryGroup,
     MenuItemResponse,
     MenuResponse,
+    SetUpsellsRequest,
     UpdateCategoryRequest,
     UpdateMenuItemRequest,
+    UpsellsResponse,
+    UpsellSuggestion,
 )
 
 if TYPE_CHECKING:
@@ -294,9 +304,10 @@ class MenuService:
                     restaurant_id=restaurant_id,
                     category_id=category.id,
                     name=row.name.strip()[:160],
+                    description=(row.description or None),
                     base_price=row.price,
                     is_available=True,
-                    is_vegetarian=True,
+                    is_vegetarian=row.is_vegetarian,
                     sort_order=sort_order,
                 )
             )
@@ -305,6 +316,91 @@ class MenuService:
 
         await self.session.commit()
         return created, skipped
+
+    # ── Upsell pairings ──────────────────────────────────────
+    async def set_upsells(
+        self,
+        item_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        payload: SetUpsellsRequest,
+        *,
+        allow_cross_tenant: bool = False,
+    ) -> UpsellsResponse:
+        item = await self.items.get_with_relations(item_id)
+        if item is None:
+            raise NotFoundError("Menu item not found.")
+        await self._assert_owns_restaurant(
+            item.restaurant_id, tenant_id, allow_cross_tenant=allow_cross_tenant
+        )
+
+        await self._assert_pro_feature(item.restaurant_id, PlanFeature.UPSELL_ENGINE)
+
+        wanted: list[uuid.UUID] = []
+        for suggested_id in payload.suggested_item_ids:
+            if suggested_id == item_id or suggested_id in wanted:
+                continue
+            wanted.append(suggested_id)
+
+        if wanted:
+            found = await self.items.list_by_ids(wanted, item.restaurant_id)
+            if len(found) != len(wanted):
+                raise NotFoundError("One or more suggested items are not on this menu.")
+
+        # Flush the removals before inserting: re-picking the same pairing would
+        # otherwise INSERT before the orphan DELETE and trip ``uq_upsell_pair``.
+        item.upsells.clear()
+        await self.session.flush()
+        item.upsells = [
+            MenuItemUpsell(menu_item_id=item_id, suggested_item_id=suggested_id, sort_order=index)
+            for index, suggested_id in enumerate(wanted)
+        ]
+        await self.session.commit()
+        return await self.get_upsells(item_id, restaurant_id=item.restaurant_id)
+
+    async def upsells_for_owner(
+        self,
+        item_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        *,
+        allow_cross_tenant: bool = False,
+    ) -> UpsellsResponse:
+        item = await self.items.get(item_id)
+        if item is None:
+            raise NotFoundError("Menu item not found.")
+        await self._assert_owns_restaurant(
+            item.restaurant_id, tenant_id, allow_cross_tenant=allow_cross_tenant
+        )
+        return await self.get_upsells(item_id, restaurant_id=item.restaurant_id)
+
+    async def get_upsells(
+        self, item_id: uuid.UUID, *, restaurant_id: uuid.UUID, available_only: bool = False
+    ) -> UpsellsResponse:
+        suggestions = await self.items.list_upsell_targets(item_id, restaurant_id)
+        return UpsellsResponse(
+            menu_item_id=item_id,
+            suggestions=[
+                UpsellSuggestion(
+                    menu_item_id=target.id,
+                    name=target.name,
+                    base_price=target.base_price,
+                    image_url=target.image_url,
+                    is_vegetarian=target.is_vegetarian,
+                )
+                for target in suggestions
+                if target.is_available or not available_only
+            ],
+        )
+
+    async def _assert_pro_feature(self, restaurant_id: uuid.UUID, feature: PlanFeature) -> None:
+        from app.services.subscription import SubscriptionService
+
+        subscription = await SubscriptionService(self.session).get_or_create(restaurant_id)
+        if not has_feature(subscription.effective_plan, feature):
+            raise ForbiddenError(
+                "This feature is part of the Pro plan.",
+                code="PLAN_UPGRADE_REQUIRED",
+                details={"feature": feature.value, "requiredPlan": "PRO"},
+            )
 
     async def _reload_item(self, item_id: uuid.UUID) -> MenuItem:
         item = await self.items.get_with_relations(item_id)

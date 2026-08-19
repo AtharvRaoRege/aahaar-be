@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, status
 
-from app.dependencies.auth import CurrentUser, require_approved, require_roles
+from app.dependencies.auth import require_approved, require_roles
 from app.dependencies.db import DBSession
 from app.dependencies.restaurant import OwnedRestaurant
 from app.models.enums import UserRole
@@ -10,6 +10,8 @@ from app.models.user import User
 from app.schemas.common import Message
 from app.schemas.restaurant import (
     CreateRestaurantRequest,
+    PublishReadinessResponse,
+    PublishRestaurantRequest,
     RestaurantResponse,
     UpdateRestaurantRequest,
 )
@@ -19,7 +21,10 @@ router = APIRouter(prefix="/restaurants", tags=["restaurants"])
 
 
 @router.get("", response_model=list[RestaurantResponse])
-async def list_restaurants(db: DBSession, user: CurrentUser) -> list[RestaurantResponse]:
+async def list_restaurants(
+    db: DBSession,
+    user: User = Depends(require_approved),
+) -> list[RestaurantResponse]:
     restaurants = await RestaurantService(db).list_for_tenant(user.tenant_id)
     return [RestaurantResponse.model_validate(r) for r in restaurants]
 
@@ -48,6 +53,25 @@ async def update_restaurant(
     _: User = Depends(require_roles(UserRole.OWNER, UserRole.MANAGER)),
 ) -> RestaurantResponse:
     updated = await RestaurantService(db).update(restaurant.id, restaurant.tenant_id, payload)
+    return RestaurantResponse.model_validate(updated)
+
+
+@router.get("/{restaurant_id}/publish-readiness", response_model=PublishReadinessResponse)
+async def get_publish_readiness(
+    restaurant: OwnedRestaurant,
+    db: DBSession,
+) -> PublishReadinessResponse:
+    return await RestaurantService(db).publish_readiness(restaurant)
+
+
+@router.post("/{restaurant_id}/publish", response_model=RestaurantResponse)
+async def publish_restaurant(
+    payload: PublishRestaurantRequest,
+    restaurant: OwnedRestaurant,
+    db: DBSession,
+    _: User = Depends(require_roles(UserRole.OWNER, UserRole.MANAGER)),
+) -> RestaurantResponse:
+    updated = await RestaurantService(db).publish(restaurant, payload.is_published)
     return RestaurantResponse.model_validate(updated)
 
 

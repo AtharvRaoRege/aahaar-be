@@ -7,8 +7,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# tesseract-ocr powers menu scanning locally — no external OCR service, no per-scan cost.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends curl tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./

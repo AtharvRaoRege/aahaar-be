@@ -3,8 +3,8 @@
 help:
 	@echo "install      Install runtime + dev deps into the active venv"
 	@echo "dev          Run the API locally with reload"
-	@echo "migrate      Apply Alembic migrations (alembic upgrade head)"
-	@echo "revision     Autogenerate a migration: make revision m='message'"
+	@echo "migrate      Apply SQL files in supabase/migrations"
+	@echo "revision     Create an empty SQL migration: make revision m='message'"
 	@echo "seed         Seed demo data"
 	@echo "up           docker compose up --build"
 	@echo "down         docker compose down"
@@ -22,10 +22,11 @@ dev:
 	uvicorn app.main:app --reload --host 0.0.0.0 --port 8001
 
 migrate:
-	alembic upgrade head
+	python -m scripts.apply_migrations
 
 revision:
-	alembic revision --autogenerate -m "$(m)"
+	@test -n "$(m)" || (echo 'usage: make revision m="describe_change"' && exit 1)
+	supabase migration new "$(m)"
 
 seed:
 	python -m scripts.seed
@@ -43,14 +44,14 @@ test:
 	pytest -q
 
 lint:
-	ruff check app scripts migrations/env.py
-	ruff format --check app scripts migrations/env.py
+	ruff check app scripts
+	ruff format --check app scripts
 	python -m compileall -q app scripts
 
 codecheck: lint
 
 fmt:
-	ruff check --fix app scripts migrations/env.py
-	ruff format app scripts migrations/env.py
+	ruff check --fix app scripts
+	ruff format app scripts
 
 preparepush: fmt lint

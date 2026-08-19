@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.models.menu import Category, MenuItem
+from app.models.menu import Category, MenuItem, MenuItemUpsell
 from app.repositories.base import BaseRepository
 
 
@@ -31,7 +31,11 @@ class MenuItemRepository(BaseRepository[MenuItem]):
         result = await self.session.execute(
             select(MenuItem)
             .where(MenuItem.id == item_id)
-            .options(selectinload(MenuItem.variants), selectinload(MenuItem.addons))
+            .options(
+                selectinload(MenuItem.variants),
+                selectinload(MenuItem.addons),
+                selectinload(MenuItem.upsells),
+            )
         )
         return result.scalar_one_or_none()
 
@@ -61,5 +65,20 @@ class MenuItemRepository(BaseRepository[MenuItem]):
                 MenuItem.restaurant_id == restaurant_id,
             )
             .options(selectinload(MenuItem.variants), selectinload(MenuItem.addons))
+        )
+        return list(result.scalars().all())
+
+    async def list_upsell_targets(
+        self, item_id: uuid.UUID, restaurant_id: uuid.UUID
+    ) -> list[MenuItem]:
+        """Suggested companions for one item, in the owner's configured order."""
+        result = await self.session.execute(
+            select(MenuItem)
+            .join(MenuItemUpsell, MenuItemUpsell.suggested_item_id == MenuItem.id)
+            .where(
+                MenuItemUpsell.menu_item_id == item_id,
+                MenuItem.restaurant_id == restaurant_id,
+            )
+            .order_by(MenuItemUpsell.sort_order)
         )
         return list(result.scalars().all())

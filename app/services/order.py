@@ -15,7 +15,9 @@ from app.models.enums import (
     ACTIVE_STATUSES,
     STATUS_TRANSITIONS,
     TERMINAL_STATUSES,
+    AnalyticsEventType,
     OrderStatus,
+    path_between,
 )
 from app.models.menu import MenuItem
 from app.models.order import Order, OrderItem, OrderStatusHistory
@@ -31,6 +33,7 @@ from app.schemas.order import (
     OrderItemRequest,
     OrderItemResponse,
     OrderResponse,
+    OrderStageCounts,
     OrderStatusHistoryResponse,
 )
 from app.services.customer import assert_session_active
@@ -89,6 +92,17 @@ class OrderService:
         restaurant = await self.restaurants.get(payload.restaurant_id)
         if restaurant is None or not restaurant.is_active:
             raise NotFoundError("Restaurant not found.")
+
+        # A draft or lapsed venue must not take orders, even by direct API call.
+        from app.services.public_state import resolve_serving_state
+
+        is_serving, reason = await resolve_serving_state(self.session, restaurant)
+        if not is_serving:
+            raise ValidationError(
+                "This venue is not accepting orders right now.",
+                code="MENU_UNAVAILABLE",
+                details={"reason": reason},
+            )
 
         if idempotency_key:
             existing = await self.orders.get_by_idempotency_key(restaurant.id, idempotency_key)
@@ -168,6 +182,7 @@ class OrderService:
 
         created = await self.orders.get_with_relations(order.id)
         assert created is not None
+        await self._safe_track_order(created)
         await self._safe_notify("created", created)
         return self._serialize(created)
 
@@ -305,6 +320,8 @@ class OrderService:
 
         updated = await self.orders.get_with_relations(order.id)
         assert updated is not None
+        # A suggestion accepted on a second trip to the menu still counts.
+        await self._safe_track_upsells(updated)
         await self._safe_notify("items", updated)
         return self._serialize(updated)
 
@@ -376,6 +393,40 @@ class OrderService:
         order = await self._load_owned(order_id, tenant_id)
         return self._serialize(order)
 
+    async def stage_counts(
+        self,
+        restaurant_id: uuid.UUID,
+        *,
+        table_number: str | None = None,
+        search: str | None = None,
+        since_hours: int | None = None,
+    ) -> OrderStageCounts:
+        """Counts for the orders tabs, using the same filters as the list.
+
+        Computed in the database rather than by counting a fetched page, so the
+        tabs still tell the truth on a day with hundreds of tickets.
+        """
+        await self.auto_close_stale(restaurant_id)
+        since = datetime.now(UTC) - timedelta(hours=since_hours) if since_hours else None
+        totals = await self.orders.count_by_status(
+            restaurant_id,
+            table_number=(table_number or None),
+            search=(search or None),
+            since=since,
+        )
+        counts = OrderStageCounts()
+        for status, count in totals.items():
+            if status == OrderStatus.PENDING:
+                counts.new += count
+            elif status in {OrderStatus.ACCEPTED, OrderStatus.PREPARING}:
+                counts.cooking += count
+            elif status in {OrderStatus.READY, OrderStatus.SERVED}:
+                counts.ready += count
+            else:
+                counts.closed += count
+            counts.all += count
+        return counts
+
     async def list_orders(
         self,
         restaurant_id: uuid.UUID,
@@ -383,14 +434,21 @@ class OrderService:
         statuses: list[OrderStatus] | None,
         active_only: bool,
         params: PageParams,
+        table_number: str | None = None,
+        search: str | None = None,
+        since_hours: int | None = None,
     ) -> Page[OrderResponse]:
         await self.auto_close_stale(restaurant_id)
         effective = statuses
         if active_only and not statuses:
             effective = list(ACTIVE_STATUSES)
+        since = datetime.now(UTC) - timedelta(hours=since_hours) if since_hours else None
         orders, total = await self.orders.list_by_restaurant(
             restaurant_id,
             statuses=effective,
+            table_number=(table_number or None),
+            search=(search or None),
+            since=since,
             limit=params.page_size,
             offset=params.offset,
         )
@@ -453,6 +511,55 @@ class OrderService:
             allow_cross_tenant=allow_cross_tenant,
         )
 
+    async def advance_to(
+        self,
+        order_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        target: OrderStatus,
+        *,
+        allow_cross_tenant: bool = False,
+    ) -> OrderResponse:
+        """Move an order forward to ``target`` in one call.
+
+        Staff work three stages, not six, so a single tap may cross more than one
+        status. Each intermediate hop is still appended to the status history, so
+        the record keeps the full lifecycle while the screen stays quick to work.
+        """
+        await self.session.execute(select(Order.id).where(Order.id == order_id).with_for_update())
+        order = await self._load_owned(order_id, tenant_id, allow_cross_tenant=allow_cross_tenant)
+
+        if order.status in TERMINAL_STATUSES:
+            raise ValidationError(
+                f"Order is already {order.status.value.lower()} and cannot change.",
+                code="ORDER_TERMINAL",
+            )
+
+        steps = path_between(order.status, target)
+        if not steps:
+            raise ValidationError(
+                f"Cannot move an order from {order.status.value} to {target.value}.",
+                code="INVALID_TRANSITION",
+            )
+
+        for step in steps:
+            order.status_history.append(
+                OrderStatusHistory(
+                    old_status=order.status,
+                    new_status=step,
+                    changed_by=user_id,
+                )
+            )
+            order.status = step
+        await self.session.commit()
+
+        refreshed = await self.orders.get_with_relations(order.id)
+        assert refreshed is not None
+        if target == OrderStatus.COMPLETED:
+            await self._safe_track_completion(refreshed)
+        await self._safe_notify("status", refreshed)
+        return self._serialize(refreshed)
+
     async def _transition(
         self,
         order_id: uuid.UUID,
@@ -492,8 +599,62 @@ class OrderService:
 
         refreshed = await self.orders.get_with_relations(order.id)
         assert refreshed is not None
+        if new_status == OrderStatus.COMPLETED:
+            await self._safe_track_completion(refreshed)
         await self._safe_notify(notify, refreshed)
         return self._serialize(refreshed)
+
+    async def _safe_track_completion(self, order: Order) -> None:
+        from app.services.analytics import AnalyticsService
+
+        try:
+            await AnalyticsService(self.session).log(
+                order.restaurant_id,
+                AnalyticsEventType.ORDER_COMPLETED,
+                customer_session_id=order.customer_session_id,
+                table_number=order.table_number,
+                target_id=order.id,
+                meta={"total": str(order.total)},
+            )
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            logger.exception("Analytics completion tracking failed for order %s", order.id)
+
+    async def _safe_track_upsells(self, order: Order) -> None:
+        """Attribute any newly accepted suggestions. Best-effort, never fatal."""
+        from app.services.analytics import AnalyticsService
+
+        try:
+            await AnalyticsService(self.session).log_order_upsells(order.id, order.restaurant_id)
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            logger.exception("Upsell attribution failed for order %s", order.id)
+
+    async def _safe_track_order(self, order: Order) -> None:
+        """Log the order event and freeze upsell attribution.
+
+        Analytics must never be able to fail an order that already committed, so
+        this is best-effort and swallows its own errors.
+        """
+        from app.services.analytics import AnalyticsService
+
+        try:
+            analytics = AnalyticsService(self.session)
+            await analytics.log(
+                order.restaurant_id,
+                AnalyticsEventType.ORDER_PLACED,
+                customer_session_id=order.customer_session_id,
+                table_number=order.table_number,
+                target_id=order.id,
+                meta={"total": str(order.total)},
+            )
+            await analytics.log_order_upsells(order.id, order.restaurant_id)
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            logger.exception("Analytics tracking failed for order %s", order.id)
 
     async def _safe_notify(self, kind: str, order: Order) -> None:
         try:

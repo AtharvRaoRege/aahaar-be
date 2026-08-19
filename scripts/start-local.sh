@@ -86,7 +86,7 @@ python -m pip install -q -r requirements-dev.txt
 
 section "Database"
 python -m scripts.wait_for_db
-alembic upgrade head
+python -m scripts.apply_migrations
 python -m scripts.seed
 
 section "Starting FastAPI"

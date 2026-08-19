@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, ForeignKey, String, Text
+from sqlalchemy import JSON, Boolean, ForeignKey, String, Text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -13,10 +13,12 @@ from app.models.enums import VenueKind
 
 if TYPE_CHECKING:
     from app.models.menu import Category, MenuItem
+    from app.models.offer import Offer
     from app.models.order import Order
     from app.models.push_subscription import PushSubscription
     from app.models.qr_code import QrCode
     from app.models.review import Review
+    from app.models.subscription import Subscription
     from app.models.tenant import Tenant
 
 
@@ -43,6 +45,13 @@ class Restaurant(UUIDMixin, TimestampMixin, Base):
     primary_color: Mapped[str] = mapped_column(String(9), default="#FF5A36", nullable=False)
     secondary_color: Mapped[str] = mapped_column(String(9), default="#FFC928", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_published: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    maps_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    google_review_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    upi_vpa: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    upi_payee_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    opening_hours: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    waiter_call_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     tenant: Mapped[Tenant] = relationship(back_populates="restaurants")
     categories: Mapped[list[Category]] = relationship(
@@ -60,4 +69,10 @@ class Restaurant(UUIDMixin, TimestampMixin, Base):
     )
     push_subscriptions: Mapped[list[PushSubscription]] = relationship(
         back_populates="restaurant", cascade="all, delete-orphan"
+    )
+    offers: Mapped[list[Offer]] = relationship(
+        back_populates="restaurant", cascade="all, delete-orphan"
+    )
+    subscription: Mapped[Subscription | None] = relationship(
+        back_populates="restaurant", cascade="all, delete-orphan", uselist=False
     )

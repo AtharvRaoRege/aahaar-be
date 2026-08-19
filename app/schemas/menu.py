@@ -135,3 +135,23 @@ class ImportJobResponse(CamelModel):
     created: int = 0
     skipped: int = 0
     error: str | None = None
+
+
+# ── Upsell pairings ───────────────────────────────────────────
+class SetUpsellsRequest(CamelModel):
+    """Replaces the full suggestion list for one item."""
+
+    suggested_item_ids: list[uuid.UUID] = Field(default_factory=list, max_length=4)
+
+
+class UpsellSuggestion(CamelModel):
+    menu_item_id: uuid.UUID
+    name: str
+    base_price: Money
+    image_url: str | None
+    is_vegetarian: bool
+
+
+class UpsellsResponse(CamelModel):
+    menu_item_id: uuid.UUID
+    suggestions: list[UpsellSuggestion] = Field(default_factory=list)

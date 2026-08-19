@@ -21,6 +21,12 @@ class UserRepository(BaseRepository[User]):
         result = await self.session.execute(select(User).where(User.clerk_user_id == clerk_user_id))
         return result.scalar_one_or_none()
 
+    async def get_by_supabase_auth_id(self, supabase_auth_id: uuid.UUID) -> User | None:
+        result = await self.session.execute(
+            select(User).where(User.supabase_auth_id == supabase_auth_id)
+        )
+        return result.scalar_one_or_none()
+
     async def list_by_tenant(self, tenant_id: uuid.UUID) -> list[User]:
         result = await self.session.execute(
             select(User).where(User.tenant_id == tenant_id).order_by(User.created_at)
@@ -32,7 +38,10 @@ class UserRepository(BaseRepository[User]):
 
         result = await self.session.execute(
             select(User)
-            .where(User.approval_status == ApprovalStatus.WAITLIST)
+            .where(
+                User.approval_status == ApprovalStatus.WAITLIST,
+                User.is_active.is_(True),
+            )
             .order_by(User.created_at.desc())
         )
         return list(result.scalars().all())

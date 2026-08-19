@@ -72,9 +72,7 @@ class AuthService:
             role=UserRole.OWNER,
             is_active=True,
             approval_status=ApprovalStatus.WAITLIST,
-            is_super_admin=False,
         )
-        self._apply_access_flags(user)
         self.session.add(user)
         await self.session.flush()
 
@@ -95,7 +93,6 @@ class AuthService:
             raise UnauthorizedError("Incorrect email or password.", code="BAD_CREDENTIALS")
         if not user.is_active:
             raise ForbiddenError("This account is disabled.", code="ACCOUNT_DISABLED")
-        self._apply_access_flags(user)
         tokens = await self._start_new_session(user)
         await self.session.commit()
         return user, tokens
@@ -166,7 +163,6 @@ class AuthService:
                 role=UserRole.OWNER,
                 is_active=True,
                 approval_status=ApprovalStatus.WAITLIST,
-                is_super_admin=False,
             )
             self.session.add(user)
             await self.session.flush()
@@ -174,7 +170,6 @@ class AuthService:
         else:
             created = False
 
-        self._apply_access_flags(user)
         if not user.is_active:
             raise ForbiddenError("This account is disabled.", code="ACCOUNT_DISABLED")
 
@@ -256,11 +251,6 @@ class AuthService:
         return user
 
     async def to_user_response(self, user: User) -> UserResponse:
-        before = (user.is_super_admin, user.approval_status)
-        self._apply_access_flags(user)
-        if (user.is_super_admin, user.approval_status) != before:
-            await self.session.commit()
-            await self.session.refresh(user)
         restaurants = await self.restaurants.list_by_tenant(user.tenant_id)
         payload = UserResponse.model_validate(user)
         return payload.model_copy(update={"has_restaurant": len(restaurants) > 0})
@@ -270,7 +260,6 @@ class AuthService:
             user.full_name = payload.full_name
         if payload.phone is not None:
             user.phone = _normalize_phone(payload.phone)
-        self._apply_access_flags(user)
         await self.session.commit()
         await self.session.refresh(user)
         await self._notify_waitlist_if_needed(user)
@@ -297,11 +286,6 @@ class AuthService:
         await self.session.commit()
         await self.session.refresh(user)
         return user
-
-    def _apply_access_flags(self, user: User) -> None:
-        if settings.is_super_admin_email(user.email):
-            user.is_super_admin = True
-            user.approval_status = ApprovalStatus.APPROVED
 
     async def _notify_waitlist_if_needed(self, user: User) -> None:
         if user.is_super_admin or user.approval_status != ApprovalStatus.WAITLIST:

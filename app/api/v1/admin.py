@@ -7,10 +7,19 @@ from fastapi import APIRouter, Depends
 from app.dependencies.auth import require_super_admin
 from app.dependencies.db import DBSession
 from app.models.user import User
-from app.schemas.admin import AdminRestaurantResponse, AdminUserResponse
+from app.schemas.admin import (
+    AdminRestaurantResponse,
+    AdminUserResponse,
+    AssignPlanRequest,
+    PlanRequestResponse,
+    SetActiveRequest,
+    SetPublishedRequest,
+)
 from app.schemas.auth import UserResponse, WaitlistUserResponse
+from app.schemas.subscription import SubscriptionResponse
 from app.services.admin import AdminService
 from app.services.auth import AuthService
+from app.services.subscription import SubscriptionService
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -48,3 +57,80 @@ async def list_restaurants(
     _: User = Depends(require_super_admin),
 ) -> list[AdminRestaurantResponse]:
     return await AdminService(db).list_restaurants()
+
+
+@router.get("/plan-requests", response_model=list[PlanRequestResponse])
+async def list_plan_requests(
+    db: DBSession,
+    _: User = Depends(require_super_admin),
+) -> list[PlanRequestResponse]:
+    return await AdminService(db).list_plan_requests()
+
+
+@router.post("/plan-requests/{request_id}/approve", response_model=SubscriptionResponse)
+async def approve_plan_request(
+    request_id: uuid.UUID,
+    db: DBSession,
+    user: User = Depends(require_super_admin),
+) -> SubscriptionResponse:
+    return await SubscriptionService(db).approve_plan_request(request_id, user.id)
+
+
+@router.post("/plan-requests/{request_id}/reject")
+async def reject_plan_request(
+    request_id: uuid.UUID,
+    db: DBSession,
+    user: User = Depends(require_super_admin),
+) -> dict[str, bool]:
+    await SubscriptionService(db).reject_plan_request(request_id, user.id)
+    return {"ok": True}
+
+
+@router.post("/waitlist/{user_id}/reject")
+async def reject_waitlist_user(
+    user_id: uuid.UUID,
+    db: DBSession,
+    user: User = Depends(require_super_admin),
+) -> dict[str, bool]:
+    await AdminService(db).reject_waitlist(user_id, user)
+    return {"ok": True}
+
+
+@router.post("/users/{user_id}/active", response_model=AdminUserResponse)
+async def set_user_active(
+    user_id: uuid.UUID,
+    payload: SetActiveRequest,
+    db: DBSession,
+    user: User = Depends(require_super_admin),
+) -> AdminUserResponse:
+    return await AdminService(db).set_user_active(user_id, payload.is_active, user)
+
+
+@router.post("/restaurants/{restaurant_id}/publish", response_model=AdminRestaurantResponse)
+async def set_restaurant_published(
+    restaurant_id: uuid.UUID,
+    payload: SetPublishedRequest,
+    db: DBSession,
+    _: User = Depends(require_super_admin),
+) -> AdminRestaurantResponse:
+    return await AdminService(db).set_published(restaurant_id, payload.is_published)
+
+
+@router.post("/restaurants/{restaurant_id}/active", response_model=AdminRestaurantResponse)
+async def set_restaurant_active(
+    restaurant_id: uuid.UUID,
+    payload: SetActiveRequest,
+    db: DBSession,
+    _: User = Depends(require_super_admin),
+) -> AdminRestaurantResponse:
+    return await AdminService(db).set_venue_active(restaurant_id, payload.is_active)
+
+
+@router.post("/restaurants/{restaurant_id}/plan", response_model=SubscriptionResponse)
+async def assign_restaurant_plan(
+    restaurant_id: uuid.UUID,
+    payload: AssignPlanRequest,
+    db: DBSession,
+    user: User = Depends(require_super_admin),
+) -> SubscriptionResponse:
+    return await SubscriptionService(db).admin_assign_plan(restaurant_id, payload.plan, user.id)

@@ -7,7 +7,7 @@ browse a mobile-first menu, and place orders; restaurant staff receive them in
 real time and drive them through the preparation lifecycle.
 
 This is the **backend** service: a modular, layered FastAPI application with
-PostgreSQL, async SQLAlchemy, Alembic migrations, JWT auth, and Socket.IO
+PostgreSQL, async SQLAlchemy, Supabase SQL migrations, JWT auth, and Socket.IO
 realtime. The React frontend lives in `../aahaar-fe` (built in a later pass).
 
 ---
@@ -33,7 +33,7 @@ emitted **after** a successful commit; clients always have a REST recovery path.
 
 ## Tech stack
 
-Python 3.13 · FastAPI · SQLAlchemy 2.x (async / asyncpg) · Alembic · PostgreSQL ·
+Python 3.13 · FastAPI · SQLAlchemy 2.x (async / asyncpg) · Supabase SQL migrations · PostgreSQL ·
 python-socketio · PyJWT · Argon2 · Pydantic v2.
 
 ## Project structure
@@ -52,8 +52,8 @@ aahaar-be/
 │   ├── sockets/             # Socket.IO server + event handlers
 │   ├── middleware/          # request-id / logging middleware
 │   └── utils/               # slugs, QR image generation
-├── migrations/              # Alembic (async env)
-├── scripts/                 # seed.py, wait_for_db.py
+├── supabase/migrations/     # SQL schema history (source of truth)
+├── scripts/                 # seed.py, wait_for_db.py, apply_migrations.py
 ├── Dockerfile · docker-compose.yml · entrypoint.sh
 ├── requirements.txt · requirements-dev.txt · Makefile · .env.example
 ```
@@ -67,7 +67,7 @@ docker compose up --build
 ```
 
 This starts PostgreSQL and the API. The entrypoint waits for the DB, runs
-`alembic upgrade head`, seeds demo data (`SEED_ON_START=true`), then serves on
+SQL files in `supabase/migrations`, seeds demo data (`SEED_ON_START=true`), then serves on
 **http://localhost:8001** (host **8001** because port 8000 is often used by another app).
 
 - API docs (Swagger): http://localhost:8001/docs
@@ -82,7 +82,7 @@ Tear down (keep data): `docker compose down` · wipe data: `docker compose down 
 python -m venv venv && source venv/bin/activate
 pip install -r requirements-dev.txt
 cp .env.example .env                 # then set DATABASE_URL + SECRET_KEY
-alembic upgrade head
+python -m scripts.apply_migrations
 python -m scripts.seed
 uvicorn app.main:app --reload --port 8001
 ```
@@ -140,12 +140,15 @@ Client join messages: `join_restaurant {restaurantId}` (auth required),
 
 ## Migrations
 
-```bash
-alembic revision --autogenerate -m "describe change"   # after editing models
-alembic upgrade head
-```
+All schema changes live in `supabase/migrations/` as timestamped SQL files.
 
-All schema changes go through Alembic (`migrations/`).
+```bash
+make revision m="describe_change"   # empty file via Supabase CLI
+# edit supabase/migrations/<timestamp>_describe_change.sql
+make migrate                        # apply pending files
+# or, against a linked Supabase project:
+supabase db push
+```
 
 ## Security
 
@@ -158,7 +161,7 @@ public endpoints · request-id logging.
 
 ## Roadmap
 
-- **Pass 1 (done):** modular FastAPI, PostgreSQL, Alembic, auth, menu, QR, orders,
+- **Pass 1 (done):** modular FastAPI, PostgreSQL, auth, menu, QR, orders,
   realtime, Docker, seed. Verified end-to-end + in-container.
 - **Pass 2:** React frontend (`../aahaar-fe`) — customer ordering app + staff
   dashboard, Food-First Neo-Brutalist design system.

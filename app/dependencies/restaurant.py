@@ -6,7 +6,7 @@ from typing import Annotated
 from fastapi import Depends, Path
 
 from app.core.errors import NotFoundError
-from app.dependencies.auth import CurrentUser
+from app.dependencies.auth import CurrentUser, assert_approved
 from app.dependencies.db import DBSession
 from app.models.restaurant import Restaurant
 from app.repositories.restaurant import RestaurantRepository
@@ -21,6 +21,7 @@ async def get_owned_restaurant(
 
     Super admins may open any kitchen so they can inspect menus, orders, and QR.
     """
+    assert_approved(user)
     repo = RestaurantRepository(db)
     if user.is_super_admin:
         restaurant = await repo.get(restaurant_id)
@@ -46,3 +47,28 @@ async def get_public_restaurant(
 
 
 PublicRestaurant = Annotated[Restaurant, Depends(get_public_restaurant)]
+
+
+async def get_serving_restaurant(
+    db: DBSession,
+    restaurant: PublicRestaurant,
+) -> Restaurant:
+    """Like ``PublicRestaurant``, but also requires the menu to be live.
+
+    Used for every public endpoint that returns menu content or accepts an
+    order. The profile endpoint stays ungated so the customer app can render the
+    right "temporarily unavailable" copy instead of an error.
+    """
+    from app.services.public_state import resolve_serving_state
+
+    is_serving, reason = await resolve_serving_state(db, restaurant)
+    if not is_serving:
+        raise NotFoundError(
+            "This menu is temporarily unavailable.",
+            code="MENU_UNAVAILABLE",
+            details={"reason": reason},
+        )
+    return restaurant
+
+
+ServingRestaurant = Annotated[Restaurant, Depends(get_serving_restaurant)]

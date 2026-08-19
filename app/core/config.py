@@ -7,9 +7,9 @@ rest of the codebase never reads ``os.environ`` directly.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, ClassVar
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -38,8 +38,13 @@ class Settings(BaseSettings):
     debug: bool = True
     api_v1_prefix: str = "/api/v1"
 
-    # Database
+    # Database (Supabase Postgres — use the Session Pooler connection string)
     database_url: str = "postgresql+asyncpg://aahaar:aahaar@localhost:5433/aahaar"
+
+    # Supabase
+    supabase_url: str = ""
+    supabase_anon_key: str = ""
+    supabase_service_role_key: str = ""
 
     # Security / JWT
     secret_key: str = "change-me-in-production-please-use-a-long-random-string"
@@ -74,9 +79,6 @@ class Settings(BaseSettings):
         ]
     )
 
-    # Super admins skip the waitlist and can approve kitchens.
-    super_admin_emails: Annotated[list[str], NoDecode] = Field(default_factory=list)
-
     # Join notifications (Gmail SMTP + optional Twilio WhatsApp).
     admin_notify_email: str = ""
     smtp_host: str = "smtp.gmail.com"
@@ -98,14 +100,51 @@ class Settings(BaseSettings):
     rate_limit_order: str = "30/60"
     rate_limit_public: str = "120/60"
 
-    @field_validator(
-        "cors_origins", "clerk_authorized_parties", "super_admin_emails", mode="before"
-    )
+    @field_validator("cors_origins", "clerk_authorized_parties", mode="before")
     @classmethod
     def _split_cors(cls, value: object) -> object:
         if isinstance(value, str):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
+
+    # The working local defaults above, named so the guard below can spot them.
+    DEV_SECRET_KEY: ClassVar[str] = "change-me-in-production-please-use-a-long-random-string"
+    DEV_DATABASE_URL: ClassVar[str] = "postgresql+asyncpg://aahaar:aahaar@localhost:5433/aahaar"
+
+    @model_validator(mode="after")
+    def _refuse_dev_defaults_in_production(self) -> Settings:
+        """Fail to boot rather than run production on development defaults.
+
+        Every field checked here has a working local default, which is
+                convenient in development and dangerous anywhere else. None of them
+                announces itself at runtime: an unset SECRET_KEY signs tokens with a value
+                published in this repository, an unset DATABASE_URL quietly talks to
+                localhost, an unset CUSTOMER_APP_BASE_URL bakes localhost into printed QR
+                codes, and an unset CORS_ORIGINS blocks the real front end. So the check
+                happens once, at startup, where it is loud.
+        """
+        if not self.is_production:
+            return self
+        problems: list[str] = []
+        if self.secret_key.strip() in {"", self.DEV_SECRET_KEY}:
+            problems.append("SECRET_KEY is unset or still the development placeholder")
+        elif len(self.secret_key.strip()) < 32:
+            problems.append("SECRET_KEY is shorter than 32 characters")
+        if self.database_url.strip() in {"", self.DEV_DATABASE_URL}:
+            problems.append("DATABASE_URL is unset or still the local development URL")
+        if self.customer_app_base_url.strip().startswith("http://localhost"):
+            problems.append(
+                "CUSTOMER_APP_BASE_URL still points at localhost — every QR code "
+                "generated would be unreachable"
+            )
+        if all(origin.startswith("http://localhost") for origin in self.cors_origins):
+            problems.append(
+                "CORS_ORIGINS is still the localhost list — browsers on the real "
+                "domain would be blocked"
+            )
+        if problems:
+            raise ValueError("Refusing to start in production: " + "; ".join(problems) + ".")
+        return self
 
     @property
     def is_production(self) -> bool:
@@ -121,10 +160,6 @@ class Settings(BaseSettings):
     @property
     def clerk_enabled(self) -> bool:
         return bool(self.clerk_secret_key.strip())
-
-    def is_super_admin_email(self, email: str) -> bool:
-        wanted = {item.strip().lower() for item in self.super_admin_emails if item.strip()}
-        return email.strip().lower() in wanted
 
     @property
     def sync_database_url(self) -> str:

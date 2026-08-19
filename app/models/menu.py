@@ -12,6 +12,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -63,6 +64,12 @@ class MenuItem(UUIDMixin, TimestampMixin, Base):
 
     restaurant: Mapped[Restaurant] = relationship(back_populates="menu_items")
     category: Mapped[Category | None] = relationship(back_populates="items")
+    upsells: Mapped[list[MenuItemUpsell]] = relationship(
+        back_populates="menu_item",
+        cascade="all, delete-orphan",
+        foreign_keys="MenuItemUpsell.menu_item_id",
+        order_by="MenuItemUpsell.sort_order",
+    )
     variants: Mapped[list[MenuItemVariant]] = relationship(
         back_populates="menu_item",
         cascade="all, delete-orphan",
@@ -104,3 +111,30 @@ class MenuItemAddon(UUIDMixin, TimestampMixin, Base):
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     menu_item: Mapped[MenuItem] = relationship(back_populates="addons")
+
+
+class MenuItemUpsell(UUIDMixin, TimestampMixin, Base):
+    """ "Goes well with" pairing shown at the cart step.
+
+    Owner-configured, not inferred — the suggestion engine stays predictable and
+    the revenue it produces is attributable (``UPSELL_ACCEPTED`` events).
+    """
+
+    __tablename__ = "menu_item_upsells"
+    __table_args__ = (
+        UniqueConstraint("menu_item_id", "suggested_item_id", name="uq_upsell_pair"),
+        CheckConstraint("menu_item_id <> suggested_item_id", name="ck_upsell_not_self"),
+    )
+
+    menu_item_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("menu_items.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    suggested_item_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("menu_items.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    menu_item: Mapped[MenuItem] = relationship(
+        back_populates="upsells", foreign_keys=[menu_item_id]
+    )
+    suggested_item: Mapped[MenuItem] = relationship(foreign_keys=[suggested_item_id])
