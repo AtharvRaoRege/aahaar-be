@@ -113,15 +113,18 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _refuse_dev_defaults_in_production(self) -> Settings:
-        """Fail to boot rather than run production on development defaults.
+        """Fail to boot rather than sign production tokens with a published key.
 
-        Every field checked here has a working local default, which is
-                convenient in development and dangerous anywhere else. None of them
-                announces itself at runtime: an unset SECRET_KEY signs tokens with a value
-                published in this repository, an unset DATABASE_URL quietly talks to
-                localhost, an unset CUSTOMER_APP_BASE_URL bakes localhost into printed QR
-                codes, and an unset CORS_ORIGINS blocks the real front end. So the check
-                happens once, at startup, where it is loud.
+        Both fields here have a working local default that is dangerous anywhere
+        else and announces nothing at runtime: an unset SECRET_KEY signs tokens
+        with a value committed to this repository, and an unset DATABASE_URL
+        quietly talks to localhost instead of failing.
+
+        CUSTOMER_APP_BASE_URL and CORS_ORIGINS were checked here too and are not
+        any more — they blocked deploys while the domain was still being set up.
+        Both now fail late instead of early: a localhost CUSTOMER_APP_BASE_URL
+        bakes an unreachable URL into printed QR codes, and a localhost
+        CORS_ORIGINS is a browser-side block with no server-side trace.
         """
         if not self.is_production:
             return self
@@ -132,16 +135,6 @@ class Settings(BaseSettings):
             problems.append("SECRET_KEY is shorter than 32 characters")
         if self.database_url.strip() in {"", self.DEV_DATABASE_URL}:
             problems.append("DATABASE_URL is unset or still the local development URL")
-        if self.customer_app_base_url.strip().startswith("http://localhost"):
-            problems.append(
-                "CUSTOMER_APP_BASE_URL still points at localhost — every QR code "
-                "generated would be unreachable"
-            )
-        if all(origin.startswith("http://localhost") for origin in self.cors_origins):
-            problems.append(
-                "CORS_ORIGINS is still the localhost list — browsers on the real "
-                "domain would be blocked"
-            )
         if problems:
             raise ValueError("Refusing to start in production: " + "; ".join(problems) + ".")
         return self
