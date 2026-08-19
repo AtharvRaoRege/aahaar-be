@@ -7,9 +7,10 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# tesseract-ocr powers menu scanning locally — no external OCR service, no per-scan cost.
+# Menu scanning (OCR) is switched off, so the tesseract-ocr package is not
+# installed. Put it back on the apt line below to re-enable the scanner.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl tesseract-ocr \
+    && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./

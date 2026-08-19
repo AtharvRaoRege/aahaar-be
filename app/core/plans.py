@@ -52,7 +52,8 @@ BASIC_INCLUDES: tuple[str, ...] = (
 # What Pro adds on top. Kept as deltas — the plan screen shows Basic's list once
 # and then only the difference, so the comparison stays readable at a glance.
 PRO_INCLUDES: tuple[str, ...] = (
-    "MENU_SCAN",
+    # Menu scanning (OCR) is switched off, so Pro must not advertise it.
+    # "MENU_SCAN",
     "UNLIMITED_TABLES",
     "ADVANCED_INSIGHTS",
     "SAVINGS_COUNTER",
