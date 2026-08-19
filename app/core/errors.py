@@ -67,6 +67,12 @@ class ValidationError(AppError):
     message = "Invalid request."
 
 
+class ServiceUnavailableError(AppError):
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    code = "SERVICE_UNAVAILABLE"
+    message = "That feature is not available right now."
+
+
 class RateLimitError(AppError):
     status_code = status.HTTP_429_TOO_MANY_REQUESTS
     code = "RATE_LIMITED"

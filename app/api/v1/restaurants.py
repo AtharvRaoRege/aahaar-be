@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, File, UploadFile, status
 
+from app.core.errors import ServiceUnavailableError
 from app.dependencies.auth import require_approved, require_roles
 from app.dependencies.db import DBSession
 from app.dependencies.restaurant import OwnedRestaurant
@@ -16,6 +17,11 @@ from app.schemas.restaurant import (
     UpdateRestaurantRequest,
 )
 from app.services.restaurant import RestaurantService
+from app.services.storage import (
+    MAX_UPLOAD_BYTES,
+    StorageNotConfiguredError,
+    upload_venue_logo,
+)
 
 router = APIRouter(prefix="/restaurants", tags=["restaurants"])
 
@@ -53,6 +59,30 @@ async def update_restaurant(
     _: User = Depends(require_roles(UserRole.OWNER, UserRole.MANAGER)),
 ) -> RestaurantResponse:
     updated = await RestaurantService(db).update(restaurant.id, restaurant.tenant_id, payload)
+    return RestaurantResponse.model_validate(updated)
+
+
+@router.post("/{restaurant_id}/logo", response_model=RestaurantResponse)
+async def upload_logo(
+    restaurant: OwnedRestaurant,
+    db: DBSession,
+    file: UploadFile = File(...),
+    _: User = Depends(require_roles(UserRole.OWNER, UserRole.MANAGER)),
+) -> RestaurantResponse:
+    """Store the venue's logo and point the venue at it.
+
+    Read one byte past the limit so an oversized upload is rejected on the size we
+    measured rather than on whatever the client claimed in its headers.
+    """
+    payload = await file.read(MAX_UPLOAD_BYTES + 1)
+    try:
+        url = upload_venue_logo(restaurant.id, file.content_type or "", payload)
+    except StorageNotConfiguredError as exc:
+        raise ServiceUnavailableError(
+            "Logo uploads need SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to be set.",
+            code="STORAGE_NOT_CONFIGURED",
+        ) from exc
+    updated = await RestaurantService(db).set_logo_url(restaurant.id, url)
     return RestaurantResponse.model_validate(updated)
 
 

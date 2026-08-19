@@ -87,6 +87,16 @@ class RestaurantService:
         await self.session.delete(restaurant)
         await self.session.commit()
 
+    async def set_logo_url(self, restaurant_id: uuid.UUID, url: str) -> Restaurant:
+        """Point the venue at a freshly uploaded logo."""
+        restaurant = await self.restaurants.get(restaurant_id)
+        if restaurant is None:
+            raise NotFoundError("Restaurant not found.")
+        restaurant.logo_url = url
+        await self.session.commit()
+        await self.session.refresh(restaurant)
+        return restaurant
+
     async def publish(self, restaurant: Restaurant, is_published: bool) -> Restaurant:
         """Flip the public menu on or off.
 
