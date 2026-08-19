@@ -31,11 +31,5 @@ jobs:
       - name: Install
         run: pip install -r requirements-dev.txt
 
-      - name: Ruff
-        run: ruff check app scripts migrations/env.py
-
-      - name: Format
-        run: ruff format --check app scripts migrations/env.py
-
-      - name: Compile
-        run: python -m compileall -q app scripts
+      - name: Lint, format and compile
+        run: make lint
