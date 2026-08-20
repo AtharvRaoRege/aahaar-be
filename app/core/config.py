@@ -110,17 +110,9 @@ class Settings(BaseSettings):
     @classmethod
     def _split_cors(cls, value: object) -> object:
         if isinstance(value, str):
-            return [
-                origin.strip().rstrip("/")
-                for origin in value.split(",")
-                if origin.strip()
-            ]
+            return [origin.strip().rstrip("/") for origin in value.split(",") if origin.strip()]
         if isinstance(value, list):
-            return [
-                str(origin).strip().rstrip("/")
-                for origin in value
-                if str(origin).strip()
-            ]
+            return [str(origin).strip().rstrip("/") for origin in value if str(origin).strip()]
         return value
 
     # The working local defaults above, named so the guard below can spot them.
