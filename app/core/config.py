@@ -24,6 +24,10 @@ class RateLimitRule:
         self.window = int(window or 60)
 
 
+def _merge_origins(base: list[str], pinned: tuple[str, ...]) -> list[str]:
+    return list(dict.fromkeys([*base, *pinned]))
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -104,12 +108,23 @@ class Settings(BaseSettings):
     @classmethod
     def _split_cors(cls, value: object) -> object:
         if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
+            return [
+                origin.strip().rstrip("/")
+                for origin in value.split(",")
+                if origin.strip()
+            ]
+        if isinstance(value, list):
+            return [
+                str(origin).strip().rstrip("/")
+                for origin in value
+                if str(origin).strip()
+            ]
         return value
 
     # The working local defaults above, named so the guard below can spot them.
     DEV_SECRET_KEY: ClassVar[str] = "change-me-in-production-please-use-a-long-random-string"
     DEV_DATABASE_URL: ClassVar[str] = "postgresql+asyncpg://aahaar:aahaar@localhost:5433/aahaar"
+    PINNED_BROWSER_ORIGINS: ClassVar[tuple[str, ...]] = ("https://aahaar.callybre.com",)
 
     @model_validator(mode="after")
     def _refuse_dev_defaults_in_production(self) -> Settings:
@@ -146,9 +161,16 @@ class Settings(BaseSettings):
     @property
     def browser_origins(self) -> list[str]:
         """Origins allowed for credentialed browser traffic. Never ``*``."""
-        if self.cors_origins:
-            return self.cors_origins
-        return [] if self.is_production else ["http://localhost:5174"]
+        base = (
+            self.cors_origins
+            if self.cors_origins
+            else ([] if self.is_production else ["http://localhost:5174"])
+        )
+        return _merge_origins(base, self.PINNED_BROWSER_ORIGINS)
+
+    @property
+    def clerk_allowed_parties(self) -> list[str]:
+        return _merge_origins(self.clerk_authorized_parties, self.PINNED_BROWSER_ORIGINS)
 
     @property
     def clerk_enabled(self) -> bool:

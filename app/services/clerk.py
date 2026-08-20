@@ -55,7 +55,7 @@ def verify_clerk_session_token(token: str) -> str:
     except jwt.PyJWTError as exc:
         raise UnauthorizedError("Invalid or expired Clerk token.", code="INVALID_TOKEN") from exc
 
-    parties = settings.clerk_authorized_parties
+    parties = settings.clerk_allowed_parties
     azp = payload.get("azp")
     if parties and azp and azp not in parties:
         raise UnauthorizedError("Clerk token origin is not allowed.", code="INVALID_TOKEN")
