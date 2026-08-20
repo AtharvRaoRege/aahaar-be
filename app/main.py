@@ -60,7 +60,8 @@ def create_app() -> FastAPI:
     register_exception_handlers(application)
     application.include_router(api_router, prefix=settings.api_v1_prefix)
 
-    @application.get("/health", tags=["health"])
+    # Unauthenticated on purpose, and answers HEAD as well as GET.
+    @application.api_route("/health", methods=["GET", "HEAD"], tags=["health"])
     async def health() -> dict[str, str]:
         return {
             "status": "ok",

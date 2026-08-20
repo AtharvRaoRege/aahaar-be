@@ -41,7 +41,9 @@ jobs:
           # green tick over a broken service.
           for attempt in 1 2 3 4 5; do
             echo "attempt $attempt -> $URL"
-            if curl --fail --show-error --silent --location \
+            # --head: /health answers HEAD, so a ping costs headers only — no JSON
+            # body built or transferred just to prove the instance is awake.
+            if curl --head --fail --show-error --silent --location \
                     --max-time 90 --retry 0 "$URL"; then
               echo
               echo "awake"
