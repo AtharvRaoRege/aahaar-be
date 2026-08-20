@@ -1,16 +1,17 @@
-name: Codecheck
+name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: codecheck-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -33,3 +34,12 @@ jobs:
 
       - name: Lint, format and compile
         run: make lint
+
+  deploy-prod:
+    name: Deploy Backend (Prod)
+    needs: codecheck
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Account B Production Build
+        run: curl -X POST "${{ secrets.BACKEND_PROD_DEPLOY_HOOK }}"
