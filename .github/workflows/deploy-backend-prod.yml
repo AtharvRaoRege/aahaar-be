@@ -1,0 +1,12 @@
+name: Deploy Backend (Prod)
+
+on:
+  workflow_dispatch: # Manual button trigger
+
+jobs:
+  deploy-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Account B Production Build
+        run: |
+          curl -X POST "${{ secrets.BACKEND_PROD_DEPLOY_HOOK }}"
