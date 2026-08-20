@@ -64,6 +64,7 @@ class Settings(BaseSettings):
             "http://localhost:5174",
             "http://localhost:5175",
             "http://localhost:3000",
+            "https://aahaar.callybre.com",
         ]
     )
 
@@ -80,6 +81,7 @@ class Settings(BaseSettings):
             "http://localhost:5173",
             "http://localhost:5174",
             "http://localhost:5175",
+            "https://aahaar.callybre.com",
         ]
     )
 
@@ -124,7 +126,10 @@ class Settings(BaseSettings):
     # The working local defaults above, named so the guard below can spot them.
     DEV_SECRET_KEY: ClassVar[str] = "change-me-in-production-please-use-a-long-random-string"
     DEV_DATABASE_URL: ClassVar[str] = "postgresql+asyncpg://aahaar:aahaar@localhost:5433/aahaar"
-    PINNED_BROWSER_ORIGINS: ClassVar[tuple[str, ...]] = ("https://aahaar.callybre.com",)
+    PINNED_BROWSER_ORIGINS: ClassVar[tuple[str, ...]] = (
+        "https://aahaar.callybre.com",
+        "https://www.aahaar.callybre.com",
+    )
 
     @model_validator(mode="after")
     def _refuse_dev_defaults_in_production(self) -> Settings:
