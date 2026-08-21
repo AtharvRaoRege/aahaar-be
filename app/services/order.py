@@ -213,8 +213,12 @@ class OrderService:
                 code="ORDER_CONFLICT",
             ) from exc
 
-        response = self._serialize(order)
-        await self._schedule_side_effects(background, order.id, "created")
+        # Reload after commit so server-default timestamps are present — skipping
+        # this returned incomplete JSON and the guest saw a network error.
+        created = await self.orders.get_with_relations(order.id)
+        assert created is not None
+        response = self._serialize(created)
+        await self._schedule_side_effects(background, created.id, "created")
         return response
 
     async def _load_menu_index(
@@ -348,8 +352,10 @@ class OrderService:
                 code="ORDER_CONFLICT",
             ) from exc
 
-        response = self._serialize(order)
-        await self._schedule_side_effects(background, order.id, "items")
+        updated = await self.orders.get_with_relations(order.id)
+        assert updated is not None
+        response = self._serialize(updated)
+        await self._schedule_side_effects(background, updated.id, "items")
         return response
 
     async def _schedule_side_effects(
