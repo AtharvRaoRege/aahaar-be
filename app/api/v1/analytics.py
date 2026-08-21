@@ -24,9 +24,13 @@ async def get_summary(
     restaurant: OwnedRestaurant,
     db: DBSession,
     range_days: int = Query(default=DEFAULT_RANGE_DAYS, ge=1, le=MAX_RANGE_DAYS, alias="rangeDays"),
-    _: User = Depends(_viewer),
+    user: User = Depends(_viewer),
 ) -> AnalyticsSummary:
-    return await AnalyticsService(db).summary(restaurant.id, range_days)
+    return await AnalyticsService(db).summary(
+        restaurant.id,
+        range_days,
+        elevate_pro=user.is_super_admin,
+    )
 
 
 @router.get("/dishes", response_model=DishPerformanceResponse)

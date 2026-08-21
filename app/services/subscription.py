@@ -78,12 +78,17 @@ class SubscriptionService:
                 await self.session.flush()
         return subscription
 
-    async def get_state(self, restaurant_id: uuid.UUID) -> SubscriptionResponse:
+    async def get_state(
+        self,
+        restaurant_id: uuid.UUID,
+        *,
+        elevate_pro: bool = False,
+    ) -> SubscriptionResponse:
         subscription = await self.get_or_create(restaurant_id)
         if self._advance(subscription):
             await self.session.commit()
             await self.session.refresh(subscription)
-        return await self.to_response(subscription)
+        return await self.to_response(subscription, elevate_pro=elevate_pro)
 
     # ── Mutations ────────────────────────────────────────────
     async def change_plan(self, restaurant_id: uuid.UUID, plan: PlanTier) -> SubscriptionResponse:
@@ -252,8 +257,15 @@ class SubscriptionService:
         return changed
 
     # ── Response mapping ─────────────────────────────────────
-    async def to_response(self, subscription: Subscription) -> SubscriptionResponse:
-        effective = subscription.effective_plan
+    async def to_response(
+        self,
+        subscription: Subscription,
+        *,
+        elevate_pro: bool = False,
+    ) -> SubscriptionResponse:
+        from app.core.config import settings
+
+        effective = PlanTier.PRO if elevate_pro else subscription.effective_plan
         spec = spec_for(effective)
         pending = await self.plan_requests.get_pending(subscription.restaurant_id)
         return SubscriptionResponse(
@@ -276,6 +288,7 @@ class SubscriptionService:
             pending_request_id=pending.id if pending else None,
             table_limit=spec.table_limit,
             features=sorted(feature.value for feature in spec.features),
+            menu_scan_enabled=settings.gemini_enabled,
         )
 
     # ── Internals ────────────────────────────────────────────

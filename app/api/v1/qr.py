@@ -18,9 +18,13 @@ async def create_qr(
     payload: CreateQrRequest,
     restaurant: OwnedRestaurant,
     db: DBSession,
-    _: User = Depends(require_roles(UserRole.OWNER, UserRole.MANAGER)),
+    user: User = Depends(require_roles(UserRole.OWNER, UserRole.MANAGER)),
 ) -> QrResponse:
-    qr = await QRCodeService(db).create_for_restaurant(restaurant, payload)
+    qr = await QRCodeService(db).create_for_restaurant(
+        restaurant,
+        payload,
+        elevate_pro=user.is_super_admin,
+    )
     return QrResponse.model_validate(qr)
 
 

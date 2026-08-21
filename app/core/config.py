@@ -101,6 +101,9 @@ class Settings(BaseSettings):
     vapid_private_key: str = ""
     vapid_contact: str = "mailto:hello@aahaar.app"
 
+    # Gemini (AI menu scan). Empty = scan endpoints disabled; FE hides the action.
+    gemini_api_key: str = ""
+
     # Rate limiting rules (raw "count/window" strings from env)
     rate_limit_login: str = "10/60"
     rate_limit_order: str = "30/60"
@@ -172,6 +175,10 @@ class Settings(BaseSettings):
     @property
     def clerk_enabled(self) -> bool:
         return bool(self.clerk_secret_key.strip())
+
+    @property
+    def gemini_enabled(self) -> bool:
+        return bool(self.gemini_api_key.strip())
 
     @property
     def sync_database_url(self) -> str:

@@ -147,11 +147,17 @@ class AnalyticsService:
             )
 
     # ── Dashboard summary ────────────────────────────────────
-    async def summary(self, restaurant_id: uuid.UUID, range_days: int) -> AnalyticsSummary:
+    async def summary(
+        self,
+        restaurant_id: uuid.UUID,
+        range_days: int,
+        *,
+        elevate_pro: bool = False,
+    ) -> AnalyticsSummary:
         range_days = self._clamp_range(range_days)
         since = self._since(range_days)
         timezone = await self._timezone(restaurant_id)
-        plan = await self._plan(restaurant_id)
+        plan = PlanTier.PRO if elevate_pro else await self._plan(restaurant_id)
         is_pro = has_feature(plan, PlanFeature.ADVANCED_ANALYTICS)
 
         counts = await self.events.event_counts(restaurant_id, since)

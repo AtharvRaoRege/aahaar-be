@@ -38,6 +38,7 @@ class SubscriptionResponse(CamelModel):
     features: list[str]
     pending_plan: PlanTier | None = None
     pending_request_id: uuid.UUID | None = None
+    menu_scan_enabled: bool = False
 
 
 class ChangePlanRequest(CamelModel):

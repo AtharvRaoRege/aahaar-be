@@ -28,9 +28,13 @@ async def create_offer(
     payload: CreateOfferRequest,
     restaurant: OwnedRestaurant,
     db: DBSession,
-    _: User = Depends(_manager),
+    user: User = Depends(_manager),
 ) -> OfferResponse:
-    return await OfferService(db).create(restaurant.id, payload)
+    return await OfferService(db).create(
+        restaurant.id,
+        payload,
+        elevate_pro=user.is_super_admin,
+    )
 
 
 @router.patch("/{offer_id}", response_model=OfferResponse)
@@ -39,9 +43,14 @@ async def update_offer(
     payload: UpdateOfferRequest,
     restaurant: OwnedRestaurant,
     db: DBSession,
-    _: User = Depends(_manager),
+    user: User = Depends(_manager),
 ) -> OfferResponse:
-    return await OfferService(db).update(offer_id, restaurant.id, payload)
+    return await OfferService(db).update(
+        offer_id,
+        restaurant.id,
+        payload,
+        elevate_pro=user.is_super_admin,
+    )
 
 
 @router.delete("/{offer_id}", response_model=Message)

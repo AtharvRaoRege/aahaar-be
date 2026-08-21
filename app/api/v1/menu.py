@@ -5,6 +5,8 @@ import uuid
 from fastapi import APIRouter, Depends, File, UploadFile, status
 from fastapi.responses import Response
 
+from app.core.config import settings
+from app.core.errors import ServiceUnavailableError
 from app.dependencies.auth import require_roles
 from app.dependencies.db import DBSession
 from app.dependencies.restaurant import OwnedRestaurant
@@ -23,27 +25,18 @@ from app.schemas.menu import (
     UpdateMenuItemRequest,
     UpsellsResponse,
 )
-
-# Menu scanning (OCR) is switched off. Re-enabling also needs these back on the
-# import lines above: PlanFeature from app.core.plans, require_feature from
-# app.dependencies.plan, and Restaurant from app.models.restaurant.
-# These imports stay commented because
-# app.services.menu_scan imports pytesseract at module level, which is no longer
-# installed — importing it would take the whole API down at startup.
-# from app.schemas.menu_scan import (
-#     ApplyMenuScanRequest,
-#     ApplyMenuScanResponse,
-#     MenuScanResponse,
-# )
+from app.schemas.menu_scan import (
+    ApplyMenuScanRequest,
+    ApplyMenuScanResponse,
+    MenuScanResponse,
+)
 from app.services import menu_import
 from app.services.menu import MenuService
-
-# from app.services.menu_scan import MAX_UPLOAD_BYTES, MenuScanService
+from app.services.menu_scan import MAX_UPLOAD_BYTES, MenuScanService
 
 router = APIRouter(tags=["menu"])
 
 _manager = require_roles(UserRole.OWNER, UserRole.MANAGER)
-# _scan = require_feature(PlanFeature.MENU_SCAN)
 
 
 # ── Full menu (dashboard, all items) ─────────────────────────
@@ -212,49 +205,52 @@ async def set_menu_item_upsells(
         user.tenant_id,
         payload,
         allow_cross_tenant=user.is_super_admin,
+        elevate_pro=user.is_super_admin,
     )
 
 
-# ── Menu scanning (Pro) — SWITCHED OFF ───────────────────────
-#
-# OCR is not in use. The service and schemas are still on disk
-# (app/services/menu_scan.py, app/schemas/menu_scan.py) so re-enabling is:
-#   1. uncomment pytesseract and pypdf in requirements.txt
-#   2. put tesseract-ocr back on the apt line in the Dockerfile
-#   3. uncomment the imports, _scan and the two routes here
-#   4. uncomment "MENU_SCAN" in PRO_INCLUDES (app/core/plans.py)
-#   5. uncomment the scan buttons and sheet in the dashboard menu page
-#
-# @router.post(
-#     "/restaurants/{restaurant_id}/menu/scan",
-#     response_model=MenuScanResponse,
-# )
-# async def scan_menu_image(
-#     db: DBSession,
-#     restaurant: Restaurant = Depends(_scan),
-#     file: UploadFile = File(...),
-#     _: User = Depends(_manager),
-# ) -> MenuScanResponse:
-#     """Read a menu photo or PDF into reviewable rows. Writes nothing."""
-#     payload = await file.read(MAX_UPLOAD_BYTES + 1)
-#     return await MenuScanService(db).scan(
-#         restaurant.id,
-#         file.filename or "",
-#         file.content_type or "",
-#         payload,
-#     )
-#
-#
-# @router.post(
-#     "/restaurants/{restaurant_id}/menu/scan/apply",
-#     response_model=ApplyMenuScanResponse,
-# )
-# async def apply_menu_scan(
-#     payload: ApplyMenuScanRequest,
-#     db: DBSession,
-#     restaurant: Restaurant = Depends(_scan),
-#     _: User = Depends(_manager),
-# ) -> ApplyMenuScanResponse:
-#     """Write only the rows the owner approved (PRD §18: never auto-publish)."""
-#     created, skipped = await MenuScanService(db).apply(restaurant.id, payload)
-#     return ApplyMenuScanResponse(created=created, skipped=skipped)
+# ── AI menu scanning (Gemini) — file never stored ───────────
+@router.post(
+    "/restaurants/{restaurant_id}/menu/scan",
+    response_model=MenuScanResponse,
+)
+async def scan_menu_image(
+    db: DBSession,
+    restaurant: OwnedRestaurant,
+    file: UploadFile = File(...),
+    _: User = Depends(_manager),
+) -> MenuScanResponse:
+    """Read a menu photo or PDF into reviewable rows. Writes nothing; upload stays in memory."""
+    if not settings.gemini_enabled:
+        raise ServiceUnavailableError(
+            "AI menu scan is not configured.",
+            code="MENU_SCAN_DISABLED",
+        )
+    payload = await file.read(MAX_UPLOAD_BYTES + 1)
+    await file.close()
+    return await MenuScanService(db).scan(
+        restaurant.id,
+        file.filename or "",
+        file.content_type or "",
+        payload,
+    )
+
+
+@router.post(
+    "/restaurants/{restaurant_id}/menu/scan/apply",
+    response_model=ApplyMenuScanResponse,
+)
+async def apply_menu_scan(
+    payload: ApplyMenuScanRequest,
+    db: DBSession,
+    restaurant: OwnedRestaurant,
+    _: User = Depends(_manager),
+) -> ApplyMenuScanResponse:
+    """Write only the rows the owner approved (PRD §18: never auto-publish)."""
+    if not settings.gemini_enabled:
+        raise ServiceUnavailableError(
+            "AI menu scan is not configured.",
+            code="MENU_SCAN_DISABLED",
+        )
+    created, skipped = await MenuScanService(db).apply(restaurant.id, payload)
+    return ApplyMenuScanResponse(created=created, skipped=skipped)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from app.dependencies.auth import require_roles
+from app.dependencies.auth import CurrentUser, require_roles
 from app.dependencies.db import DBSession
 from app.dependencies.restaurant import OwnedRestaurant
 from app.models.enums import UserRole
@@ -31,8 +31,12 @@ async def list_plans() -> list[PlanSpecResponse]:
 async def get_subscription(
     restaurant: OwnedRestaurant,
     db: DBSession,
+    user: CurrentUser,
 ) -> SubscriptionResponse:
-    return await SubscriptionService(db).get_state(restaurant.id)
+    return await SubscriptionService(db).get_state(
+        restaurant.id,
+        elevate_pro=user.is_super_admin,
+    )
 
 
 @router.post("/restaurants/{restaurant_id}/subscription/plan", response_model=SubscriptionResponse)

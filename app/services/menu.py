@@ -328,6 +328,7 @@ class MenuService:
         payload: SetUpsellsRequest,
         *,
         allow_cross_tenant: bool = False,
+        elevate_pro: bool = False,
     ) -> UpsellsResponse:
         item = await self.items.get_with_relations(item_id)
         if item is None:
@@ -336,7 +337,8 @@ class MenuService:
             item.restaurant_id, tenant_id, allow_cross_tenant=allow_cross_tenant
         )
 
-        await self._assert_pro_feature(item.restaurant_id, PlanFeature.UPSELL_ENGINE)
+        if not elevate_pro:
+            await self._assert_pro_feature(item.restaurant_id, PlanFeature.UPSELL_ENGINE)
 
         wanted: list[uuid.UUID] = []
         for suggested_id in payload.suggested_item_ids:

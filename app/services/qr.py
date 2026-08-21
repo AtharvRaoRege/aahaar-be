@@ -46,9 +46,13 @@ class QRCodeService:
         return await self.create_for_restaurant(restaurant, payload)
 
     async def create_for_restaurant(
-        self, restaurant: Restaurant, payload: CreateQrRequest
+        self,
+        restaurant: Restaurant,
+        payload: CreateQrRequest,
+        *,
+        elevate_pro: bool = False,
     ) -> QrCode:
-        await self._assert_table_quota(restaurant.id)
+        await self._assert_table_quota(restaurant.id, elevate_pro=elevate_pro)
         target_url = self._build_target_url(restaurant.slug, payload.table_number)
         qr = QrCode(
             restaurant_id=restaurant.id,
@@ -63,13 +67,20 @@ class QRCodeService:
         await self.session.refresh(qr)
         return qr
 
-    async def _assert_table_quota(self, restaurant_id: uuid.UUID) -> None:
+    async def _assert_table_quota(
+        self,
+        restaurant_id: uuid.UUID,
+        *,
+        elevate_pro: bool = False,
+    ) -> None:
         """Gate *new* table QRs only.
 
         Existing table QRs keep resolving after a downgrade — a diner already
         seated at table 11 must never hit a paywall (PRD §22, resolved in favour
         of the customer path).
         """
+        if elevate_pro:
+            return
         subscription = await SubscriptionService(self.session).get_or_create(restaurant_id)
         limit = spec_for(subscription.effective_plan).table_limit
         if limit is None:

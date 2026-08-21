@@ -52,8 +52,14 @@ class OfferService:
             for offer in offers
         ]
 
-    async def create(self, restaurant_id: uuid.UUID, payload: CreateOfferRequest) -> OfferResponse:
-        await self._assert_kind_allowed(restaurant_id, payload.kind)
+    async def create(
+        self,
+        restaurant_id: uuid.UUID,
+        payload: CreateOfferRequest,
+        *,
+        elevate_pro: bool = False,
+    ) -> OfferResponse:
+        await self._assert_kind_allowed(restaurant_id, payload.kind, elevate_pro=elevate_pro)
         offer = Offer(restaurant_id=restaurant_id, **payload.model_dump())
         self.offers.add(offer)
         await self.session.commit()
@@ -61,12 +67,17 @@ class OfferService:
         return self._to_response(offer)
 
     async def update(
-        self, offer_id: uuid.UUID, restaurant_id: uuid.UUID, payload: UpdateOfferRequest
+        self,
+        offer_id: uuid.UUID,
+        restaurant_id: uuid.UUID,
+        payload: UpdateOfferRequest,
+        *,
+        elevate_pro: bool = False,
     ) -> OfferResponse:
         offer = await self._get_owned(offer_id, restaurant_id)
         data = payload.model_dump(exclude_unset=True)
         if "kind" in data and data["kind"] is not None:
-            await self._assert_kind_allowed(restaurant_id, data["kind"])
+            await self._assert_kind_allowed(restaurant_id, data["kind"], elevate_pro=elevate_pro)
         for field, value in data.items():
             setattr(offer, field, value)
         await self.session.commit()
@@ -84,8 +95,14 @@ class OfferService:
             raise NotFoundError("Offer not found.")
         return offer
 
-    async def _assert_kind_allowed(self, restaurant_id: uuid.UUID, kind: OfferKind) -> None:
-        if kind.value in BASIC_OFFER_KINDS:
+    async def _assert_kind_allowed(
+        self,
+        restaurant_id: uuid.UUID,
+        kind: OfferKind,
+        *,
+        elevate_pro: bool = False,
+    ) -> None:
+        if elevate_pro or kind.value in BASIC_OFFER_KINDS:
             return
         subscription = await SubscriptionService(self.session).get_or_create(restaurant_id)
         if not has_feature(subscription.effective_plan, PlanFeature.ALL_OFFER_TYPES):
