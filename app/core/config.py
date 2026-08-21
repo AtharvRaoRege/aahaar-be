@@ -9,7 +9,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Annotated, ClassVar
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -102,8 +102,10 @@ class Settings(BaseSettings):
     vapid_contact: str = "mailto:hello@aahaar.app"
 
     # Gemini (AI menu scan). Empty = scan endpoints disabled; FE hides the action.
-    gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("GEMINI_API_KEY", "GOOGLE_API_KEY", "gemini_api_key"),
+    )
 
     # Rate limiting rules (raw "count/window" strings from env)
     rate_limit_login: str = "10/60"

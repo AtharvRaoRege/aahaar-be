@@ -7,8 +7,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Menu scanning (OCR) is switched off, so the tesseract-ocr package is not
-# installed. Put it back on the apt line below to re-enable the scanner.
+# Menu scanning uses Gemini when GEMINI_API_KEY is set — no local tesseract.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*

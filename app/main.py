@@ -64,11 +64,13 @@ def create_app() -> FastAPI:
 
     # Unauthenticated on purpose, and answers HEAD as well as GET.
     @application.api_route("/health", methods=["GET", "HEAD"], tags=["health"])
-    async def health() -> dict[str, str]:
+    async def health() -> dict[str, object]:
         return {
             "status": "ok",
             "service": settings.app_name,
             "environment": settings.environment,
+            # True when GEMINI_API_KEY is present — never exposes the key itself.
+            "menuScan": settings.gemini_enabled,
         }
 
     @application.get("/", tags=["health"])

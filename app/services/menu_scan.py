@@ -28,6 +28,7 @@ logger = get_logger("aahaar.menu_scan")
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_ROWS = 300
 DEFAULT_SECTION = "Mains"
+GEMINI_MODEL = "gemini-2.5-flash"
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 SHEET_SUFFIXES = {".csv", ".xlsx"}
@@ -173,10 +174,9 @@ class MenuScanService:
 
     async def _gemini_extract(self, payload: bytes, mime: str) -> dict[str, Any]:
         client = genai.Client(api_key=settings.gemini_api_key.strip())
-        model = settings.gemini_model.strip() or "gemini-2.5-flash"
         try:
             response = await client.aio.models.generate_content(
-                model=model,
+                model=GEMINI_MODEL,
                 contents=[
                     types.Content(
                         role="user",
@@ -192,17 +192,14 @@ class MenuScanService:
                 ),
             )
         except Exception as exc:
-            logger.exception("Gemini menu scan failed (model=%s)", model)
+            logger.exception("Gemini menu scan failed (model=%s)", GEMINI_MODEL)
             detail = str(exc).strip()
             hint = "Could not read that menu right now. Try again in a moment."
             lowered = detail.lower()
             if "api key" in lowered or "permission" in lowered or "401" in lowered:
                 hint = "Gemini rejected the API key. Check GEMINI_API_KEY and restart the API."
             elif "not found" in lowered or "404" in lowered or "not supported" in lowered:
-                hint = (
-                    f"Gemini model '{model}' is unavailable. "
-                    "Set GEMINI_MODEL to a current model (e.g. gemini-2.5-flash) and restart."
-                )
+                hint = "Gemini could not use the configured model. Try again later."
             raise ServiceUnavailableError(hint, code="MENU_SCAN_FAILED") from exc
 
         text = (response.text or "").strip()
