@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
+from fastapi import BackgroundTasks
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import SessionFactory
 from app.core.errors import AppError, ForbiddenError, NotFoundError, ValidationError
 from app.core.logging import get_logger
 from app.models.enums import (
@@ -76,6 +80,27 @@ def _line_key(item: OrderItem) -> tuple[str, str, tuple[str, ...], str]:
     return (menu_id, variant, tuple(sorted(addons)), (item.notes or "").strip())
 
 
+async def run_order_side_effects(order_id: uuid.UUID, kind: str) -> None:
+    """Analytics + push/socket after the guest already got 201.
+
+    Uses a fresh session so the request path never waits on Web Push.
+    """
+    async with SessionFactory() as session:
+        try:
+            service = OrderService(session)
+            order = await service.orders.get_with_relations(order_id)
+            if order is None:
+                return
+            if kind == "created":
+                await service._safe_track_order(order)
+                await service._safe_notify("created", order)
+            elif kind == "items":
+                await service._safe_track_upsells(order)
+                await service._safe_notify("items", order)
+        except Exception:
+            logger.exception("Deferred order side effects failed for %s (%s)", order_id, kind)
+
+
 class OrderService:
     def __init__(self, session: AsyncSession, notifier: NotificationService | None = None) -> None:
         self.session = session
@@ -87,7 +112,11 @@ class OrderService:
 
     # ── Creation (public, transactional) ─────────────────────
     async def create_order(
-        self, payload: CreateOrderRequest, idempotency_key: str | None = None
+        self,
+        payload: CreateOrderRequest,
+        idempotency_key: str | None = None,
+        *,
+        background: BackgroundTasks | None = None,
     ) -> OrderResponse:
         restaurant = await self.restaurants.get(payload.restaurant_id)
         if restaurant is None or not restaurant.is_active:
@@ -105,11 +134,19 @@ class OrderService:
             )
 
         if idempotency_key:
-            existing = await self.orders.get_by_idempotency_key(restaurant.id, idempotency_key)
+            existing, customer_session, menu_index = await asyncio.gather(
+                self.orders.get_by_idempotency_key(restaurant.id, idempotency_key),
+                self.sessions.get(payload.customer_session_id),
+                self._load_menu_index(payload, restaurant.id),
+            )
             if existing is not None:
                 return self._serialize(existing)
+        else:
+            customer_session, menu_index = await asyncio.gather(
+                self.sessions.get(payload.customer_session_id),
+                self._load_menu_index(payload, restaurant.id),
+            )
 
-        customer_session = await self.sessions.get(payload.customer_session_id)
         if customer_session is None or customer_session.restaurant_id != restaurant.id:
             raise ValidationError(
                 "Customer session does not belong to this restaurant.",
@@ -117,11 +154,7 @@ class OrderService:
             )
         assert_session_active(customer_session)
 
-        menu_index = await self._load_menu_index(payload, restaurant.id)
         order_items, subtotal = self._build_items(payload.items, menu_index)
-
-        # Sweep before locking below: the sweep commits, which would drop the lock.
-        await self.auto_close_stale(restaurant.id)
 
         discount = _money(0)
         tax = _money(0)
@@ -144,6 +177,7 @@ class OrderService:
                 order_items,
                 notes=payload.notes,
                 idempotency_key=idempotency_key,
+                background=background,
             )
 
         order_number = await self.orders.next_order_number(restaurant.id)
@@ -164,6 +198,7 @@ class OrderService:
         )
         order.items = order_items
         order.status_history = [OrderStatusHistory(old_status=None, new_status=OrderStatus.PENDING)]
+        order.customer_session = customer_session
         self.session.add(order)
         try:
             await self.session.commit()
@@ -172,19 +207,15 @@ class OrderService:
             if idempotency_key:
                 existing = await self.orders.get_by_idempotency_key(restaurant.id, idempotency_key)
                 if existing is not None:
-                    loaded = await self.orders.get_with_relations(existing.id)
-                    assert loaded is not None
-                    return self._serialize(loaded)
+                    return self._serialize(existing)
             raise ValidationError(
                 "Could not place this order. Try again.",
                 code="ORDER_CONFLICT",
             ) from exc
 
-        created = await self.orders.get_with_relations(order.id)
-        assert created is not None
-        await self._safe_track_order(created)
-        await self._safe_notify("created", created)
-        return self._serialize(created)
+        response = self._serialize(order)
+        await self._schedule_side_effects(background, order.id, "created")
+        return response
 
     async def _load_menu_index(
         self, payload: CreateOrderRequest, restaurant_id: uuid.UUID
@@ -282,6 +313,7 @@ class OrderService:
         *,
         notes: str | None,
         idempotency_key: str | None,
+        background: BackgroundTasks | None = None,
     ) -> OrderResponse:
         self._merge_items(order, incoming)
         order.subtotal = _money(sum((item.subtotal for item in order.items), Decimal("0")))
@@ -310,20 +342,26 @@ class OrderService:
                     order.restaurant_id, idempotency_key
                 )
                 if existing is not None:
-                    loaded = await self.orders.get_with_relations(existing.id)
-                    assert loaded is not None
-                    return self._serialize(loaded)
+                    return self._serialize(existing)
             raise ValidationError(
                 "Could not update this order. Try again.",
                 code="ORDER_CONFLICT",
             ) from exc
 
-        updated = await self.orders.get_with_relations(order.id)
-        assert updated is not None
-        # A suggestion accepted on a second trip to the menu still counts.
-        await self._safe_track_upsells(updated)
-        await self._safe_notify("items", updated)
-        return self._serialize(updated)
+        response = self._serialize(order)
+        await self._schedule_side_effects(background, order.id, "items")
+        return response
+
+    async def _schedule_side_effects(
+        self,
+        background: BackgroundTasks | None,
+        order_id: uuid.UUID,
+        kind: str,
+    ) -> None:
+        if background is not None:
+            background.add_task(run_order_side_effects, order_id, kind)
+            return
+        await run_order_side_effects(order_id, kind)
 
     def _merge_items(self, order: Order, incoming: list[OrderItem]) -> None:
         existing_by_key = {_line_key(item): item for item in order.items}
@@ -340,8 +378,8 @@ class OrderService:
     async def auto_close_stale(self, restaurant_id: uuid.UUID) -> int:
         """Close tickets nobody finished, so tables and dashboards start clean.
 
-        Runs opportunistically on reads instead of a scheduler, and bypasses
-        ``STATUS_TRANSITIONS`` because this is a system sweep, not a staff move.
+        Runs on dashboard/session reads — not on the guest place-order hot path.
+        Bypasses ``STATUS_TRANSITIONS`` because this is a system sweep.
         """
         cutoff = datetime.now(UTC) - timedelta(hours=STALE_ORDER_HOURS)
         stale = await self.orders.list_stale_active(restaurant_id, cutoff)
@@ -699,6 +737,10 @@ class OrderService:
                 contact_number=cs.contact_number,
                 guest_count=cs.guest_count,
             )
+        reviewed = False
+        state = sa_inspect(order)
+        if "review" not in state.unloaded:
+            reviewed = order.review is not None
         return OrderResponse(
             id=order.id,
             restaurant_id=order.restaurant_id,
@@ -715,7 +757,7 @@ class OrderService:
             created_at=order.created_at,
             updated_at=order.updated_at,
             customer=customer,
-            reviewed=order.review is not None,
+            reviewed=reviewed,
             items=[OrderItemResponse.model_validate(i) for i in order.items],
             status_history=[
                 OrderStatusHistoryResponse.model_validate(h) for h in order.status_history

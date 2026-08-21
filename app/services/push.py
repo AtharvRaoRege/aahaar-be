@@ -67,21 +67,23 @@ class PushService:
         rows = await self.subscriptions.list_for_restaurant(restaurant_id)
         if not rows:
             return
-        stale: list[PushSubscription] = []
         body = json.dumps(payload)
         private_key = vapid_private_pem()
         claims = vapid_claims()
-        for row in rows:
+
+        async def _one(row: PushSubscription) -> PushSubscription | None:
             try:
                 await asyncio.to_thread(_send_one, row, body, private_key, claims)
+                return None
             except Exception as exc:
                 status = getattr(getattr(exc, "response", None), "status_code", None)
                 if status in {404, 410}:
-                    stale.append(row)
-                else:
-                    logger.warning(
-                        "Web push failed endpoint=%s status=%s", row.endpoint[:48], status
-                    )
+                    return row
+                logger.warning("Web push failed endpoint=%s status=%s", row.endpoint[:48], status)
+                return None
+
+        results = await asyncio.gather(*(_one(row) for row in rows))
+        stale = [row for row in results if row is not None]
         for row in stale:
             await self.subscriptions.delete(row)
         if stale:

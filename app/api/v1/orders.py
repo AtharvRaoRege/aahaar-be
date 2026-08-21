@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Header, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, status
 
 from app.dependencies.auth import CurrentUser
 from app.dependencies.db import DBSession
@@ -34,10 +34,11 @@ router = APIRouter(tags=["orders"])
 async def create_order(
     payload: CreateOrderRequest,
     db: DBSession,
+    background: BackgroundTasks,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     _: None = Depends(rate_limit("order")),
 ) -> OrderResponse:
-    return await OrderService(db).create_order(payload, idempotency_key)
+    return await OrderService(db).create_order(payload, idempotency_key, background=background)
 
 
 @router.get("/orders/{order_id}", response_model=OrderResponse)
