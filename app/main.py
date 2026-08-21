@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 import socketio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 
 from app import __version__
 from app.api.router import api_router
@@ -56,6 +57,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
         expose_headers=["X-Request-ID"],
     )
+    application.add_middleware(GZipMiddleware, minimum_size=500)
 
     register_exception_handlers(application)
     application.include_router(api_router, prefix=settings.api_v1_prefix)

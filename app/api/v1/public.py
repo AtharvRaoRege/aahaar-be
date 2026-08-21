@@ -33,20 +33,23 @@ router = APIRouter(prefix="/public", tags=["public"])
 async def get_public_restaurant_profile(
     restaurant: PublicRestaurant,
     db: DBSession,
+    response: Response,
 ) -> PublicRestaurantResponse:
-    response = PublicRestaurantResponse.model_validate(restaurant)
+    response.headers["Cache-Control"] = "public, max-age=30, stale-while-revalidate=120"
+    response_body = PublicRestaurantResponse.model_validate(restaurant)
     # A draft or lapsed venue answers with a calm "unavailable" instead of an
     # error page — the QR itself must never look broken (PRD §30).
     is_serving, reason = await resolve_serving_state(db, restaurant)
-    response.is_serving = is_serving
-    response.unavailable_reason = reason
-    return response
+    response_body.is_serving = is_serving
+    response_body.unavailable_reason = reason
+    return response_body
 
 
 @router.get("/restaurants/{slug}/offers", response_model=list[PublicOfferResponse])
 async def get_public_offers(
-    restaurant: ServingRestaurant, db: DBSession
+    restaurant: ServingRestaurant, db: DBSession, response: Response
 ) -> list[PublicOfferResponse]:
+    response.headers["Cache-Control"] = "public, max-age=30, stale-while-revalidate=120"
     return await OfferService(db).list_public(restaurant.id)
 
 
@@ -80,7 +83,10 @@ async def log_public_event(
 
 
 @router.get("/restaurants/{slug}/menu", response_model=MenuResponse)
-async def get_public_menu(restaurant: ServingRestaurant, db: DBSession) -> MenuResponse:
+async def get_public_menu(
+    restaurant: ServingRestaurant, db: DBSession, response: Response
+) -> MenuResponse:
+    response.headers["Cache-Control"] = "public, max-age=45, stale-while-revalidate=180"
     return await MenuService(db).get_menu(restaurant.id, public=True)
 
 

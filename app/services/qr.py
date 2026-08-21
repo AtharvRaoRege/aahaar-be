@@ -11,6 +11,7 @@ from app.core.errors import ForbiddenError
 from app.core.plans import spec_for
 from app.models.enums import QrKind
 from app.models.qr_code import QrCode
+from app.models.restaurant import Restaurant
 from app.repositories.qr_code import QrCodeRepository
 from app.repositories.restaurant import RestaurantRepository
 from app.schemas.qr import CreateQrRequest
@@ -42,6 +43,11 @@ class QRCodeService:
         self, restaurant_id: uuid.UUID, tenant_id: uuid.UUID, payload: CreateQrRequest
     ) -> QrCode:
         restaurant = await self.restaurant_service.get_owned(restaurant_id, tenant_id)
+        return await self.create_for_restaurant(restaurant, payload)
+
+    async def create_for_restaurant(
+        self, restaurant: Restaurant, payload: CreateQrRequest
+    ) -> QrCode:
         await self._assert_table_quota(restaurant.id)
         target_url = self._build_target_url(restaurant.slug, payload.table_number)
         qr = QrCode(
@@ -80,6 +86,9 @@ class QRCodeService:
         self, restaurant_id: uuid.UUID, tenant_id: uuid.UUID
     ) -> list[QrCode]:
         await self.restaurant_service.get_owned(restaurant_id, tenant_id)
+        return await self.list_for_restaurant_id(restaurant_id)
+
+    async def list_for_restaurant_id(self, restaurant_id: uuid.UUID) -> list[QrCode]:
         result = await self.session.execute(
             select(QrCode)
             .where(QrCode.restaurant_id == restaurant_id)
@@ -91,6 +100,9 @@ class QRCodeService:
         self, restaurant_id: uuid.UUID, tenant_id: uuid.UUID
     ) -> QrCode:
         restaurant = await self.restaurant_service.get_owned(restaurant_id, tenant_id)
+        return await self.get_or_create_review_qr_for(restaurant)
+
+    async def get_or_create_review_qr_for(self, restaurant: Restaurant) -> QrCode:
         result = await self.session.execute(
             select(QrCode).where(
                 QrCode.restaurant_id == restaurant.id,

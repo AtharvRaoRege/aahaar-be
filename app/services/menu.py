@@ -49,7 +49,10 @@ class MenuService:
 
     # ── Menu view ────────────────────────────────────────────
     async def get_menu(self, restaurant_id: uuid.UUID, *, public: bool) -> MenuResponse:
-        await self.ensure_default_categories(restaurant_id)
+        # Defaults are seeded on restaurant create / dashboard edits — never on
+        # the guest hot path (every QR scan would otherwise risk a write).
+        if not public:
+            await self.ensure_default_categories(restaurant_id)
         categories = await self.categories.list_by_restaurant(restaurant_id, active_only=public)
         items = await self.items.list_by_restaurant(restaurant_id, available_only=public)
 
