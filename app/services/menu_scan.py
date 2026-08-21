@@ -6,20 +6,29 @@ CSV/XLSX still parse locally. Photos and PDFs go to Gemini when
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import uuid
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Literal
 
 from google import genai
 from google.genai import types
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.errors import ServiceUnavailableError, ValidationError
+from app.core.database import SessionFactory
+from app.core.errors import AppError, NotFoundError, ServiceUnavailableError, ValidationError
 from app.core.logging import get_logger
-from app.schemas.menu_scan import ApplyMenuScanRequest, MenuScanResponse, MenuScanRow
+from app.schemas.menu_scan import (
+    ApplyMenuScanRequest,
+    MenuScanJobResponse,
+    MenuScanResponse,
+    MenuScanRow,
+)
 from app.services.menu import MenuService
 from app.services.menu_import import ImportRow, parse_csv, parse_xlsx
 
@@ -28,7 +37,7 @@ logger = get_logger("aahaar.menu_scan")
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_ROWS = 300
 DEFAULT_SECTION = "Mains"
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-2.5-flash-lite"
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 SHEET_SUFFIXES = {".csv", ".xlsx"}
@@ -50,36 +59,18 @@ MIME_BY_SUFFIX = {
     ".pdf": "application/pdf",
 }
 
-SCAN_PROMPT = """You extract dishes from a restaurant menu (photo or PDF).
+# Compact prompt — keep keys stable for _map_gemini.
+SCAN_PROMPT = r"""Extract menu dishes as valid raw JSON (no Markdown/backticks).
 
-Return ONLY valid JSON matching this schema (no markdown, no commentary):
-{
-  "imageQuality": "GOOD" | "POOR",
-  "notes": string | null,
-  "rows": [
-    {
-      "name": string,
-      "category": string,
-      "price": number | null,
-      "description": string | null,
-      "isVegetarian": boolean | null,
-      "confidence": "HIGH" | "MEDIUM" | "LOW"
-    }
-  ]
-}
+JSON Schema:
+{"imageQuality":"GOOD"|"POOR","notes":string|null,"rows":[{"name":string,"category":string,"price":number|null,"description":string|null,"isVegetarian":boolean|null,"confidence":"HIGH"|"MEDIUM"|"LOW"}]}
 
 Rules:
-- Each row is one sellable dish/drink with its section heading as category.
-- Prefer Indian menu sections when clear (Starters, Mains, Breads, Beverages, Desserts, etc.).
-- Prices are numbers only (INR). Strip ₹, Rs, /- and commas. Use the full plate price when half/full both appear.
-- Skip headers, GST lines, phone numbers, addresses, "thank you", and empty decorative lines.
-- isVegetarian: true for veg, false for non-veg, null if unknown. Do not invent.
-- confidence HIGH if name+price clear; MEDIUM if one is fuzzy; LOW if guessed.
-- imageQuality POOR if blurry, skewed, dark, or cut off.
-- notes: short owner tip only when helpful; else null.
-- Max 300 rows. Preserve reading order.
-"""
-
+1. One dish/drink per row. Maintain order. Max 300 rows.
+2. Category = section header. Skip headers/GST/contact/noise.
+3. Price = plain number only (strip ₹/$/Rs/,). Use full price if half/full listed.
+4. isVegetarian = true/false/null.
+5. Set imageQuality="POOR" if unreadable. Add notes only if helpful."""
 
 class MenuScanService:
     def __init__(self, session: AsyncSession) -> None:
@@ -286,3 +277,115 @@ class MenuScanService:
         if amount <= 0:
             return None
         return amount.quantize(Decimal("0.01"))
+
+
+# ── Background jobs (same shape as Excel import) ─────────────
+ScanStatus = Literal["pending", "running", "done", "failed"]
+JOB_TTL_SECONDS = 2 * 60 * 60
+
+
+@dataclass
+class ScanJob:
+    id: uuid.UUID
+    restaurant_id: uuid.UUID
+    status: ScanStatus = "pending"
+    error: str | None = None
+    result: MenuScanResponse | None = None
+    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def to_response(self) -> MenuScanJobResponse:
+        return MenuScanJobResponse(
+            job_id=self.id,
+            status=self.status,
+            error=self.error,
+            result=self.result if self.status == "done" else None,
+        )
+
+
+_jobs: dict[uuid.UUID, ScanJob] = {}
+_jobs_lock = asyncio.Lock()
+_tasks: set[asyncio.Task[None]] = set()
+
+
+async def start_scan(
+    restaurant_id: uuid.UUID,
+    filename: str,
+    content_type: str,
+    payload: bytes,
+) -> ScanJob:
+    if not payload:
+        raise ValidationError("That file is empty.")
+    if len(payload) > MAX_UPLOAD_BYTES:
+        raise ValidationError("Menu files must be 10 MB or smaller.")
+
+    job = ScanJob(id=uuid.uuid4(), restaurant_id=restaurant_id)
+    async with _jobs_lock:
+        _prune_jobs_locked()
+        _jobs[job.id] = job
+
+    task = asyncio.create_task(
+        _run_scan(job.id, restaurant_id, filename, content_type, payload)
+    )
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+    return job
+
+
+async def get_scan_job(job_id: uuid.UUID, restaurant_id: uuid.UUID) -> ScanJob:
+    async with _jobs_lock:
+        job = _jobs.get(job_id)
+    if job is None or job.restaurant_id != restaurant_id:
+        raise NotFoundError("Scan job not found.")
+    return job
+
+
+def _prune_jobs_locked() -> None:
+    now = datetime.now(UTC)
+    stale = [
+        job_id
+        for job_id, job in _jobs.items()
+        if (now - job.started_at).total_seconds() > JOB_TTL_SECONDS
+    ]
+    for job_id in stale:
+        _jobs.pop(job_id, None)
+
+
+async def _run_scan(
+    job_id: uuid.UUID,
+    restaurant_id: uuid.UUID,
+    filename: str,
+    content_type: str,
+    payload: bytes,
+) -> None:
+    async with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return
+        job.status = "running"
+
+    try:
+        async with SessionFactory() as session:
+            result = await MenuScanService(session).scan(
+                restaurant_id, filename, content_type, payload
+            )
+        async with _jobs_lock:
+            job = _jobs.get(job_id)
+            if job is None:
+                return
+            job.result = result
+            job.status = "done"
+    except (ValidationError, ServiceUnavailableError, AppError) as exc:
+        async with _jobs_lock:
+            job = _jobs.get(job_id)
+            if job is None:
+                return
+            job.status = "failed"
+            job.error = exc.message
+    except Exception:
+        logger.exception("Menu scan failed for restaurant %s job %s", restaurant_id, job_id)
+        async with _jobs_lock:
+            job = _jobs.get(job_id)
+            if job is None:
+                return
+            job.status = "failed"
+            job.error = "Could not read that menu right now. Try again in a moment."

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from typing import Literal
 
 from pydantic import Field
@@ -37,3 +38,12 @@ class ApplyMenuScanRequest(CamelModel):
 class ApplyMenuScanResponse(CamelModel):
     created: int
     skipped: int
+
+
+class MenuScanJobResponse(CamelModel):
+    """Background scan job — poll until done, then review rows before apply."""
+
+    job_id: uuid.UUID
+    status: Literal["pending", "running", "done", "failed"]
+    error: str | None = None
+    result: MenuScanResponse | None = None

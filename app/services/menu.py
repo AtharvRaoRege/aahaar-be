@@ -158,10 +158,13 @@ class MenuService:
         category_id: uuid.UUID,
         tenant_id: uuid.UUID,
         *,
+        restaurant_id: uuid.UUID | None = None,
         allow_cross_tenant: bool = False,
     ) -> None:
         category = await self.categories.get(category_id)
         if category is None:
+            raise NotFoundError("Category not found.")
+        if restaurant_id is not None and category.restaurant_id != restaurant_id:
             raise NotFoundError("Category not found.")
         await self._assert_owns_restaurant(
             category.restaurant_id, tenant_id, allow_cross_tenant=allow_cross_tenant
@@ -244,10 +247,13 @@ class MenuService:
         item_id: uuid.UUID,
         tenant_id: uuid.UUID,
         *,
+        restaurant_id: uuid.UUID | None = None,
         allow_cross_tenant: bool = False,
     ) -> None:
         item = await self.items.get(item_id)
         if item is None:
+            raise NotFoundError("Menu item not found.")
+        if restaurant_id is not None and item.restaurant_id != restaurant_id:
             raise NotFoundError("Menu item not found.")
         await self._assert_owns_restaurant(
             item.restaurant_id, tenant_id, allow_cross_tenant=allow_cross_tenant

@@ -28,11 +28,12 @@ from app.schemas.menu import (
 from app.schemas.menu_scan import (
     ApplyMenuScanRequest,
     ApplyMenuScanResponse,
+    MenuScanJobResponse,
     MenuScanResponse,
 )
 from app.services import menu_import
 from app.services.menu import MenuService
-from app.services.menu_scan import MAX_UPLOAD_BYTES, MenuScanService
+from app.services.menu_scan import MAX_UPLOAD_BYTES, MenuScanService, get_scan_job, start_scan
 
 router = APIRouter(tags=["menu"])
 
@@ -120,6 +121,26 @@ async def update_category(
     return CategoryResponse.model_validate(category)
 
 
+@router.delete(
+    "/restaurants/{restaurant_id}/categories/{category_id}",
+    response_model=Message,
+)
+async def delete_restaurant_category(
+    category_id: uuid.UUID,
+    restaurant: OwnedRestaurant,
+    db: DBSession,
+    user: User = Depends(_manager),
+) -> Message:
+    """Delete a category for this hotel only — never touches other venues."""
+    await MenuService(db).delete_category(
+        category_id,
+        user.tenant_id,
+        restaurant_id=restaurant.id,
+        allow_cross_tenant=user.is_super_admin,
+    )
+    return Message(message="Category deleted.")
+
+
 @router.delete("/categories/{category_id}", response_model=Message)
 async def delete_category(
     category_id: uuid.UUID,
@@ -169,6 +190,26 @@ async def update_menu_item(
     return MenuItemResponse.model_validate(item)
 
 
+@router.delete(
+    "/restaurants/{restaurant_id}/menu-items/{menu_item_id}",
+    response_model=Message,
+)
+async def delete_restaurant_menu_item(
+    menu_item_id: uuid.UUID,
+    restaurant: OwnedRestaurant,
+    db: DBSession,
+    user: User = Depends(_manager),
+) -> Message:
+    """Delete a dish for this hotel only."""
+    await MenuService(db).delete_item(
+        menu_item_id,
+        user.tenant_id,
+        restaurant_id=restaurant.id,
+        allow_cross_tenant=user.is_super_admin,
+    )
+    return Message(message="Menu item deleted.")
+
+
 @router.delete("/menu-items/{menu_item_id}", response_model=Message)
 async def delete_menu_item(
     menu_item_id: uuid.UUID,
@@ -212,15 +253,15 @@ async def set_menu_item_upsells(
 # ── AI menu scanning (Gemini) — file never stored ───────────
 @router.post(
     "/restaurants/{restaurant_id}/menu/scan",
-    response_model=MenuScanResponse,
+    response_model=MenuScanJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
 )
 async def scan_menu_image(
-    db: DBSession,
     restaurant: OwnedRestaurant,
     file: UploadFile = File(...),
     _: User = Depends(_manager),
-) -> MenuScanResponse:
-    """Read a menu photo or PDF into reviewable rows. Writes nothing; upload stays in memory."""
+) -> MenuScanJobResponse:
+    """Queue a menu photo/PDF scan in the background. Upload stays in memory."""
     if not settings.gemini_enabled:
         raise ServiceUnavailableError(
             "AI menu scan needs GEMINI_API_KEY on the server. Add it to .env and restart the API.",
@@ -228,12 +269,26 @@ async def scan_menu_image(
         )
     payload = await file.read(MAX_UPLOAD_BYTES + 1)
     await file.close()
-    return await MenuScanService(db).scan(
+    job = await start_scan(
         restaurant.id,
         file.filename or "",
         file.content_type or "",
         payload,
     )
+    return job.to_response()
+
+
+@router.get(
+    "/restaurants/{restaurant_id}/menu/scan/{job_id}",
+    response_model=MenuScanJobResponse,
+)
+async def get_menu_scan_job(
+    job_id: uuid.UUID,
+    restaurant: OwnedRestaurant,
+    _: User = Depends(_manager),
+) -> MenuScanJobResponse:
+    job = await get_scan_job(job_id, restaurant.id)
+    return job.to_response()
 
 
 @router.post(
