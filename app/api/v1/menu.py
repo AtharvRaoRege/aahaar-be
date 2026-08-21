@@ -223,7 +223,7 @@ async def scan_menu_image(
     """Read a menu photo or PDF into reviewable rows. Writes nothing; upload stays in memory."""
     if not settings.gemini_enabled:
         raise ServiceUnavailableError(
-            "AI menu scan is not configured.",
+            "AI menu scan needs GEMINI_API_KEY on the server. Add it to .env and restart the API.",
             code="MENU_SCAN_DISABLED",
         )
     payload = await file.read(MAX_UPLOAD_BYTES + 1)
@@ -249,7 +249,7 @@ async def apply_menu_scan(
     """Write only the rows the owner approved (PRD §18: never auto-publish)."""
     if not settings.gemini_enabled:
         raise ServiceUnavailableError(
-            "AI menu scan is not configured.",
+            "AI menu scan needs GEMINI_API_KEY on the server. Add it to .env and restart the API.",
             code="MENU_SCAN_DISABLED",
         )
     created, skipped = await MenuScanService(db).apply(restaurant.id, payload)

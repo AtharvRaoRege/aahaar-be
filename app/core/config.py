@@ -103,6 +103,7 @@ class Settings(BaseSettings):
 
     # Gemini (AI menu scan). Empty = scan endpoints disabled; FE hides the action.
     gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash"
 
     # Rate limiting rules (raw "count/window" strings from env)
     rate_limit_login: str = "10/60"
