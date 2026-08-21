@@ -37,7 +37,8 @@ logger = get_logger("aahaar.menu_scan")
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_ROWS = 300
 DEFAULT_SECTION = "Mains"
-GEMINI_MODEL = "gemini-2.5-flash-lite"
+# Prefer lite; fall back if the key/project cannot use that model id.
+GEMINI_MODELS = ("gemini-2.5-flash-lite", "gemini-2.5-flash")
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 SHEET_SUFFIXES = {".csv", ".xlsx"}
@@ -165,33 +166,55 @@ class MenuScanService:
 
     async def _gemini_extract(self, payload: bytes, mime: str) -> dict[str, Any]:
         client = genai.Client(api_key=settings.gemini_api_key.strip())
-        try:
-            response = await client.aio.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=[
-                    types.Content(
-                        role="user",
-                        parts=[
-                            types.Part.from_bytes(data=payload, mime_type=mime),
-                            types.Part.from_text(text=SCAN_PROMPT),
-                        ],
-                    )
+        contents = [
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_bytes(data=payload, mime_type=mime),
+                    types.Part.from_text(text=SCAN_PROMPT),
                 ],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.1,
-                ),
             )
-        except Exception as exc:
-            logger.exception("Gemini menu scan failed (model=%s)", GEMINI_MODEL)
-            detail = str(exc).strip()
-            hint = "Could not read that menu right now. Try again in a moment."
-            lowered = detail.lower()
-            if "api key" in lowered or "permission" in lowered or "401" in lowered:
-                hint = "Gemini rejected the API key. Check GEMINI_API_KEY and restart the API."
-            elif "not found" in lowered or "404" in lowered or "not supported" in lowered:
-                hint = "Gemini could not use the configured model. Try again later."
-            raise ServiceUnavailableError(hint, code="MENU_SCAN_FAILED") from exc
+        ]
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.1,
+        )
+
+        last_error: Exception | None = None
+        response = None
+        for model in GEMINI_MODELS:
+            try:
+                response = await client.aio.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config=config,
+                )
+                break
+            except Exception as exc:
+                last_error = exc
+                detail = str(exc).strip().lower()
+                model_missing = (
+                    "not found" in detail
+                    or "404" in detail
+                    or "not supported" in detail
+                    or "is not found" in detail
+                )
+                if model_missing and model != GEMINI_MODELS[-1]:
+                    logger.warning("Gemini model %s unavailable, trying next", model)
+                    continue
+                logger.exception("Gemini menu scan failed (model=%s)", model)
+                hint = "Could not read that menu right now. Try again in a moment."
+                if "api key" in detail or "permission" in detail or "401" in detail:
+                    hint = "Gemini rejected the API key. Check GEMINI_API_KEY and restart the API."
+                elif model_missing:
+                    hint = "Gemini could not use the configured model. Try again later."
+                raise ServiceUnavailableError(hint, code="MENU_SCAN_FAILED") from exc
+
+        if response is None:
+            raise ServiceUnavailableError(
+                "Could not read that menu right now. Try again in a moment.",
+                code="MENU_SCAN_FAILED",
+            ) from last_error
 
         text = (response.text or "").strip()
         if not text:

@@ -1,8 +1,7 @@
-"""Engagement analytics, the savings counter, and the menu-engineering matrix.
+"""Engagement analytics and the menu-engineering matrix.
 
-Basic sees scan/view/order counts. Pro sees visitor identity, revenue depth, and
-the two numbers an owner actually renews for: how much aggregator commission the
-direct orders avoided, and which dishes are worth keeping.
+Basic sees scan/view/order counts. Pro sees visitor identity, revenue depth,
+table-QR highlight stats, and which dishes are worth keeping.
 """
 
 from __future__ import annotations
@@ -16,10 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import ValidationError
 from app.core.logging import get_logger
 from app.core.plans import (
-    AGGREGATOR_COMMISSION_RATE,
     PlanFeature,
     has_feature,
-    spec_for,
 )
 from app.models.analytics import AnalyticsEvent
 from app.models.enums import (
@@ -32,13 +29,13 @@ from app.repositories.menu import CategoryRepository, MenuItemRepository
 from app.repositories.restaurant import RestaurantRepository
 from app.schemas.analytics import (
     AnalyticsSummary,
-    CommissionSavings,
     DayPoint,
     DishPerformanceResponse,
     DishRow,
     HourPoint,
     LogEventRequest,
     NamedCount,
+    TableHighlight,
     UpsellImpact,
 )
 from app.services.subscription import SubscriptionService
@@ -212,8 +209,13 @@ class AnalyticsService:
             DayPoint(day=row[0], count=row[1])
             for row in await self.events.scans_by_day(restaurant_id, since, timezone)
         ]
-        summary.commission_savings = self._commission_savings(
-            revenue, revenue_orders, plan, range_days
+        summary.table_highlight = TableHighlight(
+            order_count=revenue_orders,
+            completed_count=completed,
+            revenue=self._money(revenue),
+            average_order_value=summary.average_order_value or self._money(Decimal("0")),
+            unique_guests=summary.unique_visitors or 0,
+            returning_guests=summary.repeat_visitors or 0,
         )
         summary.upsell_impact = UpsellImpact(
             accepted_count=upsell_count,
@@ -283,22 +285,6 @@ class AnalyticsService:
         if best_units and units <= best_units * SLOW_SHARE:
             return VERDICT_SLOW
         return VERDICT_STEADY
-
-    def _commission_savings(
-        self, revenue: Decimal, order_count: int, plan: PlanTier, range_days: int
-    ) -> CommissionSavings:
-        """What the same orders would have cost through a delivery aggregator."""
-        commission = self._money(revenue * AGGREGATOR_COMMISSION_RATE)
-        months = Decimal(range_days) / Decimal("30")
-        platform_cost = self._money(spec_for(plan).monthly_price * months)
-        return CommissionSavings(
-            direct_order_revenue=self._money(revenue),
-            commission_rate=float(AGGREGATOR_COMMISSION_RATE),
-            commission_avoided=commission,
-            platform_cost=platform_cost,
-            net_saving=self._money(commission - platform_cost),
-            order_count=order_count,
-        )
 
     def _clamp_range(self, range_days: int) -> int:
         if range_days <= 0:

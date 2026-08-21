@@ -106,10 +106,6 @@ BILLING_PERIOD_DAYS = 30
 # Days of continued service after a failed renewal before suspension (PRD §22).
 GRACE_PERIOD_DAYS = 3
 
-# Blended aggregator commission used by the savings counter. Conservative end of
-# the 22-30% range Swiggy/Zomato charge so the number is never overstated.
-AGGREGATOR_COMMISSION_RATE = Decimal("0.22")
-
 
 def spec_for(tier: PlanTier) -> PlanSpec:
     return PLANS[tier]

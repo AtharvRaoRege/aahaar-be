@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import selectinload
@@ -29,15 +29,16 @@ class OrderRepository(BaseRepository[Order]):
         )
         return result.scalar_one_or_none()
 
-    async def next_order_number(self, restaurant_id: uuid.UUID) -> int:
-        """Highest order number for a restaurant + 1.
+    async def next_order_number(self, restaurant_id: uuid.UUID, service_date: date) -> int:
+        """Next kitchen ticket number for this restaurant on ``service_date``.
 
-        The caller must already hold a lock on the restaurant row (see
-        ``lock_restaurant``) so concurrent orders cannot collide.
+        Resets to 1 each calendar day in the venue timezone. The caller must
+        already hold a lock on the restaurant row so concurrent orders cannot collide.
         """
         result = await self.session.execute(
             select(func.coalesce(func.max(Order.order_number), 0)).where(
-                Order.restaurant_id == restaurant_id
+                Order.restaurant_id == restaurant_id,
+                Order.service_date == service_date,
             )
         )
         return int(result.scalar_one()) + 1

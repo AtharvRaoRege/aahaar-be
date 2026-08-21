@@ -34,15 +34,15 @@ class HourPoint(CamelModel):
     count: int
 
 
-class CommissionSavings(CamelModel):
-    """What the same direct orders would have cost through an aggregator."""
+class TableHighlight(CamelModel):
+    """How table QR ordering performed in the period — no delivery comparisons."""
 
-    direct_order_revenue: Money
-    commission_rate: float
-    commission_avoided: Money
-    platform_cost: Money
-    net_saving: Money
     order_count: int
+    completed_count: int
+    revenue: Money
+    average_order_value: Money
+    unique_guests: int
+    returning_guests: int
 
 
 class UpsellImpact(CamelModel):
@@ -86,7 +86,7 @@ class AnalyticsSummary(CamelModel):
     offer_views: list[NamedCount] = Field(default_factory=list)
     peak_hours: list[HourPoint] = Field(default_factory=list)
     scans_by_day: list[DayPoint] = Field(default_factory=list)
-    commission_savings: CommissionSavings | None = None
+    table_highlight: TableHighlight | None = None
     upsell_impact: UpsellImpact | None = None
 
 

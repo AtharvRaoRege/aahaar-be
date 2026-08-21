@@ -53,8 +53,10 @@ class MenuService:
         # the guest hot path (every QR scan would otherwise risk a write).
         if not public:
             await self.ensure_default_categories(restaurant_id)
-        categories = await self.categories.list_by_restaurant(restaurant_id, active_only=public)
-        items = await self.items.list_by_restaurant(restaurant_id, available_only=public)
+        # Soft-deleted categories (is_active=False) and dishes (is_available=False)
+        # stay out of both dashboard and guest menus.
+        categories = await self.categories.list_by_restaurant(restaurant_id, active_only=True)
+        items = await self.items.list_by_restaurant(restaurant_id, available_only=True)
 
         by_category: dict[uuid.UUID | None, list[MenuItem]] = {}
         for item in items:
@@ -116,9 +118,22 @@ class MenuService:
     ) -> Category:
         name = payload.name.strip()
         existing = await self.categories.list_by_restaurant(restaurant_id)
-        taken = {" ".join(category.name.split()).casefold() for category in existing}
-        if " ".join(name.split()).casefold() in taken:
-            raise ConflictError("A category with that name already exists.")
+        key = " ".join(name.split()).casefold()
+        inactive_match: Category | None = None
+        for category in existing:
+            cat_key = " ".join(category.name.split()).casefold()
+            if cat_key != key:
+                continue
+            if category.is_active:
+                raise ConflictError("A category with that name already exists.")
+            inactive_match = category
+        if inactive_match is not None:
+            inactive_match.is_active = True
+            if payload.sort_order:
+                inactive_match.sort_order = payload.sort_order
+            await self.session.commit()
+            await self.session.refresh(inactive_match)
+            return inactive_match
         sort_order = payload.sort_order
         if sort_order == 0:
             sort_order = max((category.sort_order for category in existing), default=-1) + 1
@@ -169,7 +184,31 @@ class MenuService:
         await self._assert_owns_restaurant(
             category.restaurant_id, tenant_id, allow_cross_tenant=allow_cross_tenant
         )
-        await self.session.delete(category)
+        # Soft-delete the section and every dish inside it for this hotel only.
+        category.is_active = False
+        items = await self.items.list_by_restaurant(category.restaurant_id, available_only=False)
+        for item in items:
+            if item.category_id == category.id:
+                item.is_available = False
+        await self.session.commit()
+
+    async def delete_item(
+        self,
+        item_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        *,
+        restaurant_id: uuid.UUID | None = None,
+        allow_cross_tenant: bool = False,
+    ) -> None:
+        item = await self.items.get(item_id)
+        if item is None:
+            raise NotFoundError("Menu item not found.")
+        if restaurant_id is not None and item.restaurant_id != restaurant_id:
+            raise NotFoundError("Menu item not found.")
+        await self._assert_owns_restaurant(
+            item.restaurant_id, tenant_id, allow_cross_tenant=allow_cross_tenant
+        )
+        item.is_available = False
         await self.session.commit()
 
     # ── Menu items ───────────────────────────────────────────
@@ -182,7 +221,7 @@ class MenuService:
         allow_cross_tenant: bool = False,
     ) -> MenuItem:
         category = await self.categories.get(category_id)
-        if category is None:
+        if category is None or not category.is_active:
             raise NotFoundError("Category not found.")
         await self._assert_owns_restaurant(
             category.restaurant_id, tenant_id, allow_cross_tenant=allow_cross_tenant
@@ -242,25 +281,6 @@ class MenuService:
         await self.session.commit()
         return await self._reload_item(item.id)
 
-    async def delete_item(
-        self,
-        item_id: uuid.UUID,
-        tenant_id: uuid.UUID,
-        *,
-        restaurant_id: uuid.UUID | None = None,
-        allow_cross_tenant: bool = False,
-    ) -> None:
-        item = await self.items.get(item_id)
-        if item is None:
-            raise NotFoundError("Menu item not found.")
-        if restaurant_id is not None and item.restaurant_id != restaurant_id:
-            raise NotFoundError("Menu item not found.")
-        await self._assert_owns_restaurant(
-            item.restaurant_id, tenant_id, allow_cross_tenant=allow_cross_tenant
-        )
-        await self.session.delete(item)
-        await self.session.commit()
-
     async def import_dishes(
         self, restaurant_id: uuid.UUID, rows: list[ImportRow]
     ) -> tuple[int, int]:
@@ -271,7 +291,6 @@ class MenuService:
         next_category_sort = max((category.sort_order for category in categories), default=-1)
 
         items = await self.items.list_by_restaurant(restaurant_id)
-        existing = {(item.category_id, item.name.strip().lower()) for item in items}
         next_item_sort: dict[uuid.UUID, int] = {}
         for item in items:
             if item.category_id is None:
@@ -287,6 +306,8 @@ class MenuService:
         for row in rows:
             key = " ".join(row.category.split()).casefold()
             category = by_name.get(key)
+            if category is not None and not category.is_active:
+                category.is_active = True
             if category is None:
                 next_category_sort += 1
                 category = Category(
@@ -301,8 +322,28 @@ class MenuService:
 
             name_key = row.name.strip().lower()
             file_key = (category.id, name_key)
-            if file_key in seen_in_file or (category.id, name_key) in existing:
+            existing_match = next(
+                (
+                    item
+                    for item in items
+                    if item.category_id == category.id and item.name.strip().lower() == name_key
+                ),
+                None,
+            )
+            if file_key in seen_in_file:
                 skipped += 1
+                continue
+            if existing_match is not None:
+                if not existing_match.is_available:
+                    existing_match.is_available = True
+                    existing_match.base_price = row.price
+                    if row.description:
+                        existing_match.description = row.description
+                    existing_match.is_vegetarian = row.is_vegetarian
+                    created += 1
+                else:
+                    skipped += 1
+                seen_in_file.add(file_key)
                 continue
             seen_in_file.add(file_key)
 
@@ -320,7 +361,6 @@ class MenuService:
                     sort_order=sort_order,
                 )
             )
-            existing.add(file_key)
             created += 1
 
         await self.session.commit()

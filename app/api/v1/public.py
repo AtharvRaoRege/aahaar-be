@@ -14,7 +14,7 @@ from app.schemas.customer import (
     CustomerSessionResponse,
 )
 from app.schemas.menu import MenuResponse, UpsellsResponse
-from app.schemas.offer import PublicOfferResponse
+from app.schemas.offer import PublicOfferResponse, VerifyOfferRequest, VerifyOfferResponse
 from app.schemas.order import OrderResponse
 from app.schemas.restaurant import PublicRestaurantResponse
 from app.schemas.waiter_call import CreateWaiterCallRequest, WaiterCallResponse
@@ -51,6 +51,22 @@ async def get_public_offers(
 ) -> list[PublicOfferResponse]:
     response.headers["Cache-Control"] = "public, max-age=30, stale-while-revalidate=120"
     return await OfferService(db).list_public(restaurant.id)
+
+
+@router.post(
+    "/restaurants/{slug}/offers/verify",
+    response_model=VerifyOfferResponse,
+)
+async def verify_public_offer(
+    payload: VerifyOfferRequest,
+    restaurant: ServingRestaurant,
+    db: DBSession,
+    _: None = Depends(rate_limit("public")),
+) -> VerifyOfferResponse:
+    """Price the cart on the server and check the coupon against live offer rules."""
+    return await OrderService(db).verify_coupon(
+        restaurant.id, payload.coupon_code, payload.items
+    )
 
 
 @router.get(

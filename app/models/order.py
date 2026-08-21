@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     JSON,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Integer,
@@ -35,7 +36,12 @@ if TYPE_CHECKING:
 class Order(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "orders"
     __table_args__ = (
-        UniqueConstraint("restaurant_id", "order_number", name="uq_orders_restaurant_number"),
+        UniqueConstraint(
+            "restaurant_id",
+            "service_date",
+            "order_number",
+            name="uq_orders_restaurant_day_number",
+        ),
         UniqueConstraint(
             "restaurant_id", "idempotency_key", name="uq_orders_restaurant_idempotency"
         ),
@@ -49,6 +55,7 @@ class Order(UUIDMixin, TimestampMixin, Base):
         ForeignKey("customer_sessions.id", ondelete="SET NULL"), nullable=True, index=True
     )
     order_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    service_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     status: Mapped[OrderStatus] = mapped_column(
         SAEnum(OrderStatus, native_enum=False, length=20),
         default=OrderStatus.PENDING,

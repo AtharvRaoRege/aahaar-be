@@ -176,7 +176,7 @@ class NotificationService:
                     "type": "waiter",
                     "title": f"Waiter needed · Table {table}",
                     "body": "A guest asked for a waiter at this table.",
-                    "url": "/dashboard/orders",
+                    "url": "/dashboard",
                     "tag": f"waiter:{call.id}",
                     "tableNumber": call.table_number,
                 },

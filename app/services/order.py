@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import BackgroundTasks
 from sqlalchemy import inspect as sa_inspect
@@ -28,6 +29,7 @@ from app.models.order import Order, OrderItem, OrderStatusHistory
 from app.models.restaurant import Restaurant
 from app.repositories.customer import CustomerSessionRepository
 from app.repositories.menu import MenuItemRepository
+from app.repositories.offer import OfferRepository
 from app.repositories.order import OrderRepository
 from app.repositories.restaurant import RestaurantRepository
 from app.schemas.common import Page, PageParams
@@ -42,6 +44,7 @@ from app.schemas.order import (
 )
 from app.services.customer import assert_session_active
 from app.services.notification import NotificationService
+from app.services.offer_discount import compute_discount
 
 logger = get_logger("aahaar.orders")
 
@@ -53,6 +56,16 @@ STALE_ORDER_HOURS = 2
 
 def _money(value: Decimal | int | float | str) -> Decimal:
     return Decimal(str(value)).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
+
+
+def _service_date(timezone_name: str | None) -> date:
+    """Venue-local calendar day used to reset kitchen ticket numbers at midnight."""
+    name = (timezone_name or "Asia/Kolkata").strip() or "Asia/Kolkata"
+    try:
+        zone = ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        zone = ZoneInfo("Asia/Kolkata")
+    return datetime.now(zone).date()
 
 
 def _join_notes(current: str | None, extra: str | None) -> str | None:
@@ -108,6 +121,7 @@ class OrderService:
         self.items = MenuItemRepository(session)
         self.sessions = CustomerSessionRepository(session)
         self.restaurants = RestaurantRepository(session)
+        self.offers = OfferRepository(session)
         self.notifier = notifier or NotificationService(session)
 
     # ── Creation (public, transactional) ─────────────────────
@@ -156,7 +170,12 @@ class OrderService:
 
         order_items, subtotal = self._build_items(payload.items, menu_index)
 
-        discount = _money(0)
+        discount = await self._resolve_discount(
+            restaurant.id,
+            payload.coupon_code,
+            order_items,
+            subtotal,
+        )
         tax = _money(0)
         total = _money(subtotal - discount + tax)
 
@@ -180,12 +199,13 @@ class OrderService:
                 background=background,
             )
 
-        order_number = await self.orders.next_order_number(restaurant.id)
-
+        service_day = _service_date(restaurant.timezone)
+        order_number = await self.orders.next_order_number(restaurant.id, service_day)
         order = Order(
             restaurant_id=restaurant.id,
             customer_session_id=customer_session.id,
             order_number=order_number,
+            service_date=service_day,
             status=OrderStatus.PENDING,
             subtotal=subtotal,
             discount=discount,
@@ -224,7 +244,12 @@ class OrderService:
     async def _load_menu_index(
         self, payload: CreateOrderRequest, restaurant_id: uuid.UUID
     ) -> dict[uuid.UUID, MenuItem]:
-        item_ids = [line.menu_item_id for line in payload.items]
+        return await self._menu_index_for_lines(payload.items, restaurant_id)
+
+    async def _menu_index_for_lines(
+        self, lines: list[OrderItemRequest], restaurant_id: uuid.UUID
+    ) -> dict[uuid.UUID, MenuItem]:
+        item_ids = [line.menu_item_id for line in lines]
         items = await self.items.list_by_ids(item_ids, restaurant_id)
         return {item.id: item for item in items}
 
@@ -309,6 +334,69 @@ class OrderService:
             )
 
         return order_items, _money(subtotal)
+
+    async def _resolve_discount(
+        self,
+        restaurant_id: uuid.UUID,
+        coupon_code: str | None,
+        order_items: list[OrderItem],
+        subtotal: Decimal,
+    ) -> Decimal:
+        if not (coupon_code or "").strip():
+            return _money(0)
+        _offer, discount = await self._apply_coupon(
+            restaurant_id, coupon_code, order_items, subtotal
+        )
+        return discount
+
+    async def _apply_coupon(
+        self,
+        restaurant_id: uuid.UUID,
+        coupon_code: str | None,
+        order_items: list[OrderItem],
+        subtotal: Decimal,
+    ):
+        code = (coupon_code or "").strip()
+        if not code:
+            raise ValidationError("Enter an offer code.", code="OFFER_INVALID")
+        offer = await self.offers.find_live_by_coupon(
+            restaurant_id, code, datetime.now(UTC)
+        )
+        if offer is None:
+            raise ValidationError(
+                "That code is not valid right now.",
+                code="OFFER_INVALID",
+            )
+        units: list[Decimal] = []
+        for item in order_items:
+            for _ in range(item.quantity):
+                units.append(_money(item.price_snapshot))
+        discount = compute_discount(offer, subtotal=_money(subtotal), units=units)
+        return offer, discount
+
+    async def verify_coupon(
+        self,
+        restaurant_id: uuid.UUID,
+        coupon_code: str,
+        items: list[OrderItemRequest],
+    ):
+        from app.schemas.offer import VerifyOfferResponse
+
+        menu_index = await self._menu_index_for_lines(items, restaurant_id)
+        order_items, subtotal = self._build_items(items, menu_index)
+        offer, discount = await self._apply_coupon(
+            restaurant_id, coupon_code, order_items, subtotal
+        )
+        total = _money(subtotal - discount)
+        code = (offer.coupon_code or coupon_code).strip().upper()
+        return VerifyOfferResponse(
+            offer_id=offer.id,
+            title=offer.title,
+            coupon_code=code,
+            discount=discount,
+            subtotal=subtotal,
+            total=total,
+        )
 
     async def _append_to_order(
         self,

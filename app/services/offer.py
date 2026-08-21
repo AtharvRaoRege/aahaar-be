@@ -1,9 +1,4 @@
-"""Offers shown on the customer menu.
-
-Display-only in v1 (PRD §17): the coupon code is shown to the diner and to staff,
-but no discount is applied to the order total. Stacking rules and a price engine
-are Phase 2 — shipping them early would put arithmetic bugs on live bills.
-"""
+"""Offers shown on the customer menu and redeemable by coupon at checkout."""
 
 from __future__ import annotations
 
@@ -47,6 +42,8 @@ class OfferService:
                 image_url=offer.image_url,
                 coupon_code=offer.coupon_code,
                 value=offer.value,
+                min_item_count=offer.min_item_count,
+                min_order_amount=offer.min_order_amount,
                 ends_at=offer.ends_at,
             )
             for offer in offers

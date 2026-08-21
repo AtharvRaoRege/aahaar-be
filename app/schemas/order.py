@@ -22,6 +22,7 @@ class CreateOrderRequest(CamelModel):
     customer_session_id: uuid.UUID
     items: list[OrderItemRequest] = Field(min_length=1)
     notes: str | None = Field(default=None, max_length=500)
+    coupon_code: str | None = Field(default=None, max_length=32)
 
 
 class UpdateOrderStatusRequest(CamelModel):
