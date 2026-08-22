@@ -21,6 +21,7 @@ class PlanFeature(enum.StrEnum):
     """Capabilities that can be gated behind a tier."""
 
     MENU_SCAN = "MENU_SCAN"
+    BRAND_THEME = "BRAND_THEME"
     ADVANCED_ANALYTICS = "ADVANCED_ANALYTICS"
     DISH_PERFORMANCE = "DISH_PERFORMANCE"
     UPSELL_ENGINE = "UPSELL_ENGINE"
@@ -53,6 +54,7 @@ BASIC_INCLUDES: tuple[str, ...] = (
 # and then only the difference, so the comparison stays readable at a glance.
 PRO_INCLUDES: tuple[str, ...] = (
     "MENU_SCAN",
+    "BRAND_THEME",
     "UNLIMITED_TABLES",
     "ADVANCED_INSIGHTS",
     "SAVINGS_COUNTER",

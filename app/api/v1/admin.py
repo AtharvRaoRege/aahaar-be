@@ -12,16 +12,40 @@ from app.schemas.admin import (
     AdminUserResponse,
     AssignPlanRequest,
     PlanRequestResponse,
+    PlatformSettingsResponse,
     SetActiveRequest,
     SetPublishedRequest,
+    UpdatePlatformSettingsRequest,
 )
 from app.schemas.auth import UserResponse, WaitlistUserResponse
 from app.schemas.subscription import SubscriptionResponse
 from app.services.admin import AdminService
 from app.services.auth import AuthService
+from app.services.platform_settings import PlatformSettingsService
 from app.services.subscription import SubscriptionService
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+@router.get("/settings", response_model=PlatformSettingsResponse)
+async def get_platform_settings(
+    db: DBSession,
+    _: User = Depends(require_super_admin),
+) -> PlatformSettingsResponse:
+    open_registration = await PlatformSettingsService(db).is_open_registration()
+    return PlatformSettingsResponse(open_registration=open_registration)
+
+
+@router.patch("/settings", response_model=PlatformSettingsResponse)
+async def update_platform_settings(
+    payload: UpdatePlatformSettingsRequest,
+    db: DBSession,
+    _: User = Depends(require_super_admin),
+) -> PlatformSettingsResponse:
+    open_registration = await PlatformSettingsService(db).set_open_registration(
+        payload.open_registration
+    )
+    return PlatformSettingsResponse(open_registration=open_registration)
 
 
 @router.get("/waitlist", response_model=list[WaitlistUserResponse])

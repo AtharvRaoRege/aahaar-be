@@ -86,6 +86,16 @@ class MenuService:
                 )
             )
 
+        # Empty categories sink to the bottom so kitchens with dishes don't look bare
+        # when default Starters/Mains are still empty after an AI/Excel import.
+        groups.sort(
+            key=lambda group: (
+                0 if group.items else 1,
+                group.sort_order,
+                group.name.casefold(),
+            )
+        )
+
         return MenuResponse(restaurant_id=restaurant_id, categories=groups)
 
     async def ensure_default_categories(

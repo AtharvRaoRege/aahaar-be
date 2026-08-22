@@ -27,6 +27,7 @@ from app.models.menu import (
 from app.models.offer import Offer
 from app.models.order import Order, OrderItem, OrderStatusHistory
 from app.models.plan_request import PlanRequest
+from app.models.platform_setting import PlatformSetting
 from app.models.push_subscription import PushSubscription
 from app.models.qr_code import QrCode
 from app.models.restaurant import Restaurant
@@ -55,6 +56,7 @@ __all__ = [
     "PlanRequest",
     "PlanRequestStatus",
     "PlanTier",
+    "PlatformSetting",
     "PushSubscription",
     "QrCode",
     "QrKind",

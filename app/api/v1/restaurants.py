@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, UploadFile, status
 
-from app.core.errors import ServiceUnavailableError
+from app.core.errors import ForbiddenError, ServiceUnavailableError
+from app.core.plans import PlanFeature, has_feature
 from app.dependencies.auth import require_approved, require_roles
 from app.dependencies.db import DBSession
+from app.dependencies.plan import elevate_plan
 from app.dependencies.restaurant import OwnedRestaurant
 from app.models.enums import UserRole
 from app.models.user import User
@@ -22,6 +24,7 @@ from app.services.storage import (
     StorageNotConfiguredError,
     upload_venue_logo,
 )
+from app.services.subscription import SubscriptionService
 
 router = APIRouter(prefix="/restaurants", tags=["restaurants"])
 
@@ -56,8 +59,22 @@ async def update_restaurant(
     payload: UpdateRestaurantRequest,
     restaurant: OwnedRestaurant,
     db: DBSession,
-    _: User = Depends(require_roles(UserRole.OWNER, UserRole.MANAGER)),
+    user: User = Depends(require_roles(UserRole.OWNER, UserRole.MANAGER)),
 ) -> RestaurantResponse:
+    data = payload.model_dump(exclude_unset=True)
+    if "primary_color" in data or "secondary_color" in data:
+        if not user.is_super_admin:
+            subscription = await SubscriptionService(db).get_or_create(restaurant.id)
+            plan = elevate_plan(subscription.effective_plan, user)
+            if not has_feature(plan, PlanFeature.BRAND_THEME):
+                raise ForbiddenError(
+                    "Brand colour is part of the Pro plan.",
+                    code="PLAN_UPGRADE_REQUIRED",
+                    details={
+                        "feature": PlanFeature.BRAND_THEME.value,
+                        "requiredPlan": "PRO",
+                    },
+                )
     updated = await RestaurantService(db).update(restaurant.id, restaurant.tenant_id, payload)
     return RestaurantResponse.model_validate(updated)
 

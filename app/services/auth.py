@@ -36,6 +36,7 @@ from app.schemas.auth import (
     UserResponse,
     WaitlistUserResponse,
 )
+from app.services.platform_settings import PlatformSettingsService
 from app.utils.slugs import random_suffix, slugify
 
 
@@ -46,6 +47,12 @@ class AuthService:
         self.tokens = RefreshTokenRepository(session)
         self.tenants = TenantRepository(session)
         self.restaurants = RestaurantRepository(session)
+        self.platform = PlatformSettingsService(session)
+
+    async def _signup_approval_status(self) -> ApprovalStatus:
+        if await self.platform.is_open_registration():
+            return ApprovalStatus.APPROVED
+        return ApprovalStatus.WAITLIST
 
     # ── Registration ─────────────────────────────────────────
     async def register(self, payload: RegisterRequest) -> tuple[User, TokenResponse]:
@@ -63,6 +70,7 @@ class AuthService:
         self.session.add(tenant)
         await self.session.flush()
 
+        approval = await self._signup_approval_status()
         user = User(
             tenant_id=tenant.id,
             email=payload.email.lower(),
@@ -71,7 +79,7 @@ class AuthService:
             hashed_password=hash_password(payload.password),
             role=UserRole.OWNER,
             is_active=True,
-            approval_status=ApprovalStatus.WAITLIST,
+            approval_status=approval,
         )
         self.session.add(user)
         await self.session.flush()
@@ -79,7 +87,8 @@ class AuthService:
         tokens = await self._start_new_session(user)
         await self.session.commit()
         await self.session.refresh(user)
-        await self._notify_waitlist_if_needed(user)
+        if approval == ApprovalStatus.WAITLIST:
+            await self._notify_waitlist_if_needed(user)
         return user, tokens
 
     # ── Login / tokens ───────────────────────────────────────
@@ -154,6 +163,7 @@ class AuthService:
             )
             self.session.add(tenant)
             await self.session.flush()
+            approval = await self._signup_approval_status()
             user = User(
                 tenant_id=tenant.id,
                 email=profile.email,
@@ -162,13 +172,15 @@ class AuthService:
                 clerk_user_id=profile.clerk_user_id,
                 role=UserRole.OWNER,
                 is_active=True,
-                approval_status=ApprovalStatus.WAITLIST,
+                approval_status=approval,
             )
             self.session.add(user)
             await self.session.flush()
             created = True
+            waitlisted = approval == ApprovalStatus.WAITLIST
         else:
             created = False
+            waitlisted = False
 
         if not user.is_active:
             raise ForbiddenError("This account is disabled.", code="ACCOUNT_DISABLED")
@@ -176,7 +188,7 @@ class AuthService:
         tokens = await self._start_new_session(user)
         await self.session.commit()
         await self.session.refresh(user)
-        if created:
+        if created and waitlisted:
             await self._notify_waitlist_if_needed(user)
         return user, tokens
 

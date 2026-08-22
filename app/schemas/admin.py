@@ -49,3 +49,11 @@ class SetPublishedRequest(CamelModel):
 
 class AssignPlanRequest(CamelModel):
     plan: PlanTier
+
+
+class PlatformSettingsResponse(CamelModel):
+    open_registration: bool
+
+
+class UpdatePlatformSettingsRequest(CamelModel):
+    open_registration: bool

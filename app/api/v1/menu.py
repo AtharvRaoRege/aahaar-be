@@ -7,10 +7,13 @@ from fastapi.responses import Response
 
 from app.core.config import settings
 from app.core.errors import ServiceUnavailableError
+from app.core.plans import PlanFeature
 from app.dependencies.auth import require_roles
 from app.dependencies.db import DBSession
+from app.dependencies.plan import require_feature
 from app.dependencies.restaurant import OwnedRestaurant
 from app.models.enums import UserRole
+from app.models.restaurant import Restaurant
 from app.models.user import User
 from app.schemas.common import Message
 from app.schemas.menu import (
@@ -38,6 +41,7 @@ from app.services.menu_scan import MAX_UPLOAD_BYTES, MenuScanService, get_scan_j
 router = APIRouter(tags=["menu"])
 
 _manager = require_roles(UserRole.OWNER, UserRole.MANAGER)
+_menu_scan = require_feature(PlanFeature.MENU_SCAN)
 
 
 # ── Full menu (dashboard, all items) ─────────────────────────
@@ -257,8 +261,8 @@ async def set_menu_item_upsells(
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def scan_menu_image(
-    restaurant: OwnedRestaurant,
     file: UploadFile = File(...),
+    restaurant: Restaurant = Depends(_menu_scan),
     _: User = Depends(_manager),
 ) -> MenuScanJobResponse:
     """Queue a menu photo/PDF scan in the background. Upload stays in memory."""
@@ -284,7 +288,7 @@ async def scan_menu_image(
 )
 async def get_menu_scan_job(
     job_id: uuid.UUID,
-    restaurant: OwnedRestaurant,
+    restaurant: Restaurant = Depends(_menu_scan),
     _: User = Depends(_manager),
 ) -> MenuScanJobResponse:
     job = await get_scan_job(job_id, restaurant.id)
@@ -298,7 +302,7 @@ async def get_menu_scan_job(
 async def apply_menu_scan(
     payload: ApplyMenuScanRequest,
     db: DBSession,
-    restaurant: OwnedRestaurant,
+    restaurant: Restaurant = Depends(_menu_scan),
     _: User = Depends(_manager),
 ) -> ApplyMenuScanResponse:
     """Write only the rows the owner approved (PRD §18: never auto-publish)."""

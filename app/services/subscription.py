@@ -288,6 +288,7 @@ class SubscriptionService:
             pending_request_id=pending.id if pending else None,
             table_limit=spec.table_limit,
             features=sorted(feature.value for feature in spec.features),
+            # Infra flag only — Pro entitlement is in ``features`` / ``effective_plan``.
             menu_scan_enabled=settings.gemini_enabled,
         )
 
