@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from app.dependencies.auth import require_super_admin
 from app.dependencies.db import DBSession
 from app.models.user import User
 from app.schemas.admin import (
+    AdminAnalyticsResponse,
     AdminRestaurantResponse,
     AdminUserResponse,
     AssignPlanRequest,
@@ -81,6 +82,15 @@ async def list_restaurants(
     _: User = Depends(require_super_admin),
 ) -> list[AdminRestaurantResponse]:
     return await AdminService(db).list_restaurants()
+
+
+@router.get("/analytics", response_model=AdminAnalyticsResponse)
+async def platform_analytics(
+    db: DBSession,
+    _: User = Depends(require_super_admin),
+    range_days: int = Query(default=30, ge=1, le=90),
+) -> AdminAnalyticsResponse:
+    return await AdminService(db).platform_analytics(range_days)
 
 
 @router.get("/plan-requests", response_model=list[PlanRequestResponse])

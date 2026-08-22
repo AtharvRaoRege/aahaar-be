@@ -9,11 +9,20 @@ from app.models.enums import ApprovalStatus, UserRole
 from app.models.restaurant import Restaurant
 from app.models.subscription import Subscription
 from app.models.user import User
+from app.repositories.admin_analytics import AdminAnalyticsRepository
 from app.repositories.plan_request import PlanRequestRepository
 from app.repositories.restaurant import RestaurantRepository
 from app.repositories.subscription import SubscriptionRepository
 from app.repositories.user import RefreshTokenRepository, UserRepository
-from app.schemas.admin import AdminRestaurantResponse, AdminUserResponse, PlanRequestResponse
+from app.schemas.admin import (
+    AdminAnalyticsResponse,
+    AdminAnalyticsTotals,
+    AdminDailyPoint,
+    AdminRestaurantResponse,
+    AdminTopVenue,
+    AdminUserResponse,
+    PlanRequestResponse,
+)
 
 
 class AdminService:
@@ -23,6 +32,50 @@ class AdminService:
         self.restaurants = RestaurantRepository(session)
         self.subscriptions = SubscriptionRepository(session)
         self.plan_requests = PlanRequestRepository(session)
+        self.analytics = AdminAnalyticsRepository(session)
+
+    async def platform_analytics(self, range_days: int = 30) -> AdminAnalyticsResponse:
+        days = max(1, min(90, range_days))
+        since = self.analytics._since(days)
+        venues_total, venues_live, venues_pro, venues_basic = await self.analytics.venue_counts()
+        owners_total = await self.analytics.owner_count()
+        orders_placed, orders_completed = await self.analytics.order_counts(since)
+        revenue = await self.analytics.revenue(since)
+        orders_today, revenue_today = await self.analytics.today_stats()
+        daily_rows = await self.analytics.daily_series(since)
+        top_rows = await self.analytics.top_venues(since)
+
+        return AdminAnalyticsResponse(
+            range_days=days,
+            totals=AdminAnalyticsTotals(
+                orders_placed=orders_placed,
+                orders_completed=orders_completed,
+                revenue=revenue,
+                revenue_today=revenue_today,
+                orders_today=orders_today,
+                venues_total=venues_total,
+                venues_live=venues_live,
+                venues_pro=venues_pro,
+                venues_basic=venues_basic,
+                owners_total=owners_total,
+            ),
+            daily=[
+                AdminDailyPoint(day=day, orders=orders, revenue=earned)
+                for day, orders, earned in daily_rows
+            ],
+            top_venues=[
+                AdminTopVenue(
+                    restaurant_id=venue.id,
+                    name=venue.name,
+                    venue_kind=venue.venue_kind,
+                    plan=plan,
+                    is_published=venue.is_published,
+                    orders=orders,
+                    revenue=earned,
+                )
+                for venue, plan, orders, earned in top_rows
+            ],
+        )
 
     async def list_users(self) -> list[AdminUserResponse]:
         users = await self.users.list_all()

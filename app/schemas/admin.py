@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 
 from app.models.enums import PlanRequestStatus, PlanTier, SubscriptionStatus, VenueKind
 from app.schemas.auth import WaitlistUserResponse
@@ -57,3 +58,39 @@ class PlatformSettingsResponse(CamelModel):
 
 class UpdatePlatformSettingsRequest(CamelModel):
     open_registration: bool
+
+
+class AdminDailyPoint(CamelModel):
+    day: date
+    orders: int
+    revenue: Decimal
+
+
+class AdminTopVenue(CamelModel):
+    restaurant_id: uuid.UUID
+    name: str
+    venue_kind: VenueKind
+    plan: PlanTier | None = None
+    is_published: bool
+    orders: int
+    revenue: Decimal
+
+
+class AdminAnalyticsTotals(CamelModel):
+    orders_placed: int
+    orders_completed: int
+    revenue: Decimal
+    revenue_today: Decimal
+    orders_today: int
+    venues_total: int
+    venues_live: int
+    venues_pro: int
+    venues_basic: int
+    owners_total: int
+
+
+class AdminAnalyticsResponse(CamelModel):
+    range_days: int
+    totals: AdminAnalyticsTotals
+    daily: list[AdminDailyPoint]
+    top_venues: list[AdminTopVenue]
