@@ -52,6 +52,7 @@ class RestaurantService:
             venue_kind=payload.venue_kind,
             maps_url=payload.maps_url,
             google_review_url=payload.google_review_url,
+            instagram_url=payload.instagram_url,
             upi_vpa=payload.upi_vpa,
             upi_payee_name=payload.upi_payee_name,
             opening_hours=self._dump_hours(payload.opening_hours),

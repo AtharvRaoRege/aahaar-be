@@ -48,6 +48,7 @@ class Restaurant(UUIDMixin, TimestampMixin, Base):
     is_published: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     maps_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     google_review_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    instagram_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     upi_vpa: Mapped[str | None] = mapped_column(String(120), nullable=True)
     upi_payee_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     opening_hours: Mapped[dict | None] = mapped_column(JSON, nullable=True)

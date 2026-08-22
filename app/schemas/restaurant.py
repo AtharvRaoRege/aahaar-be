@@ -33,6 +33,7 @@ class RestaurantBase(CamelModel):
     secondary_color: str = Field(default="#FFC928", max_length=9)
     maps_url: str | None = Field(default=None, max_length=500)
     google_review_url: str | None = Field(default=None, max_length=500)
+    instagram_url: str | None = Field(default=None, max_length=500)
     upi_vpa: str | None = Field(default=None, max_length=120)
     upi_payee_name: str | None = Field(default=None, max_length=120)
     opening_hours: OpeningHours | None = None
@@ -57,6 +58,7 @@ class UpdateRestaurantRequest(CamelModel):
     secondary_color: str | None = Field(default=None, max_length=9)
     maps_url: str | None = Field(default=None, max_length=500)
     google_review_url: str | None = Field(default=None, max_length=500)
+    instagram_url: str | None = Field(default=None, max_length=500)
     upi_vpa: str | None = Field(default=None, max_length=120)
     upi_payee_name: str | None = Field(default=None, max_length=120)
     opening_hours: OpeningHours | None = None
@@ -105,6 +107,7 @@ class PublicRestaurantResponse(CamelModel):
     secondary_color: str
     maps_url: str | None = None
     google_review_url: str | None = None
+    instagram_url: str | None = None
     upi_vpa: str | None = None
     upi_payee_name: str | None = None
     opening_hours: OpeningHours | None = None

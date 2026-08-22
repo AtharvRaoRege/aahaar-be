@@ -2,6 +2,9 @@
 
 CSV/XLSX still parse locally. Photos and PDFs go to Gemini when
 ``GEMINI_API_KEY`` is set. Apply writes only owner-approved rows.
+
+Phone photos are resized/recompressed before Gemini so large camera files
+do not blow past model payload limits.
 """
 
 from __future__ import annotations
@@ -13,10 +16,12 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from io import BytesIO
 from typing import Any, Literal
 
 from google import genai
 from google.genai import types
+from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -34,13 +39,19 @@ from app.services.menu_import import ImportRow, parse_csv, parse_xlsx
 
 logger = get_logger("aahaar.menu_scan")
 
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+# Accept big phone photos; we compress before Gemini.
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_ROWS = 300
 DEFAULT_SECTION = "Mains"
 # Prefer lite; fall back if the key/project cannot use that model id.
 GEMINI_MODELS = ("gemini-2.5-flash-lite", "gemini-2.5-flash")
+# Keep Gemini payloads lean — long menus still read fine at this resolution.
+GEMINI_MAX_EDGE = 2048
+GEMINI_TARGET_BYTES = 4 * 1024 * 1024
+GEMINI_RETRY_EDGE = 1600
+GEMINI_RETRY_TARGET_BYTES = 2 * 1024 * 1024
 
-IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".heif"}
 SHEET_SUFFIXES = {".csv", ".xlsx"}
 SHEET_TYPES = {
     "text/csv",
@@ -57,6 +68,8 @@ MIME_BY_SUFFIX = {
     ".bmp": "image/bmp",
     ".tif": "image/tiff",
     ".tiff": "image/tiff",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
     ".pdf": "application/pdf",
 }
 
@@ -71,7 +84,9 @@ Rules:
 2. Category = section header. Skip headers/GST/contact/noise.
 3. Price = plain number only (strip ₹/$/Rs/,). Use full price if half/full listed.
 4. isVegetarian = true/false/null.
-5. Set imageQuality="POOR" if unreadable. Add notes only if helpful."""
+5. Set imageQuality="POOR" if unreadable. Add notes only if helpful.
+6. Always return the JSON object even if only a few dishes are clear."""
+
 
 class MenuScanService:
     def __init__(self, session: AsyncSession) -> None:
@@ -85,7 +100,7 @@ class MenuScanService:
         if not payload:
             raise ValidationError("That file is empty.")
         if len(payload) > MAX_UPLOAD_BYTES:
-            raise ValidationError("Menu files must be 10 MB or smaller.")
+            raise ValidationError("Menu files must be 20 MB or smaller.")
 
         lowered = (filename or "").lower()
         media = content_type.split(";")[0].strip().lower()
@@ -110,7 +125,25 @@ class MenuScanService:
             )
 
         mime = self._resolve_mime(lowered, media)
-        raw = await self._gemini_extract(payload, mime)
+        prepared_payload, prepared_mime = self._prepare_for_gemini(
+            payload, mime, max_edge=GEMINI_MAX_EDGE, target_bytes=GEMINI_TARGET_BYTES
+        )
+        try:
+            raw = await self._gemini_extract(prepared_payload, prepared_mime)
+        except ServiceUnavailableError as exc:
+            detail = (exc.message or "").lower()
+            if "api key" in detail:
+                raise
+            smaller, smaller_mime = self._prepare_for_gemini(
+                payload,
+                mime,
+                max_edge=GEMINI_RETRY_EDGE,
+                target_bytes=GEMINI_RETRY_TARGET_BYTES,
+            )
+            if smaller == prepared_payload:
+                raise
+            logger.warning("Retrying Gemini menu scan with a smaller image")
+            raw = await self._gemini_extract(smaller, smaller_mime)
         return self._map_gemini(raw)
 
     async def apply(
@@ -164,6 +197,63 @@ class MenuScanService:
                 return mime
         raise ValidationError("Upload a photo (JPG, PNG, WebP), a PDF, a CSV, or an Excel file.")
 
+    def _prepare_for_gemini(
+        self,
+        payload: bytes,
+        mime: str,
+        *,
+        max_edge: int,
+        target_bytes: int,
+    ) -> tuple[bytes, str]:
+        """Downscale / JPEG-compress photos so Gemini gets a stable payload."""
+        if mime == "application/pdf" or not mime.startswith("image/"):
+            return payload, mime
+
+        try:
+            with Image.open(BytesIO(payload)) as source:
+                source.load()
+                image = ImageOps.exif_transpose(source)
+                if image.mode in {"RGBA", "LA", "P"}:
+                    rgba = image.convert("RGBA")
+                    background = Image.new("RGB", rgba.size, (255, 255, 255))
+                    background.paste(rgba, mask=rgba.split()[-1])
+                    image = background
+                elif image.mode != "RGB":
+                    image = image.convert("RGB")
+
+                width, height = image.size
+                longest = max(width, height) or 1
+                if longest > max_edge:
+                    scale = max_edge / longest
+                    image = image.resize(
+                        (max(1, int(width * scale)), max(1, int(height * scale))),
+                        Image.Resampling.LANCZOS,
+                    )
+
+                encoded = payload
+                for quality in (85, 75, 65, 55, 45):
+                    buffer = BytesIO()
+                    image.save(buffer, format="JPEG", quality=quality, optimize=True)
+                    encoded = buffer.getvalue()
+                    if len(encoded) <= target_bytes:
+                        break
+                logger.info(
+                    "Prepared menu scan image: %s bytes → %s bytes (edge≤%s)",
+                    len(payload),
+                    len(encoded),
+                    max_edge,
+                )
+                return encoded, "image/jpeg"
+        except (UnidentifiedImageError, OSError) as exc:
+            if mime in {"image/heic", "image/heif"}:
+                raise ValidationError(
+                    "This phone photo format (HEIC) could not be read. "
+                    "Export it as JPG in Photos, or take the shot as JPG.",
+                    code="UNSUPPORTED_IMAGE_TYPE",
+                ) from exc
+            logger.warning("Could not re-encode menu photo; sending original (%s)", exc)
+            return payload, mime
+
     async def _gemini_extract(self, payload: bytes, mime: str) -> dict[str, Any]:
         client = genai.Client(api_key=settings.gemini_api_key.strip())
         contents = [
@@ -178,18 +268,31 @@ class MenuScanService:
         config = types.GenerateContentConfig(
             response_mime_type="application/json",
             temperature=0.1,
+            max_output_tokens=8192,
         )
 
         last_error: Exception | None = None
         response = None
         for model in GEMINI_MODELS:
             try:
-                response = await client.aio.models.generate_content(
-                    model=model,
-                    contents=contents,
-                    config=config,
+                response = await asyncio.wait_for(
+                    client.aio.models.generate_content(
+                        model=model,
+                        contents=contents,
+                        config=config,
+                    ),
+                    timeout=90,
                 )
                 break
+            except TimeoutError as exc:
+                last_error = exc
+                logger.warning("Gemini menu scan timed out (model=%s)", model)
+                if model != GEMINI_MODELS[-1]:
+                    continue
+                raise ServiceUnavailableError(
+                    "Reading that menu took too long. Try a clearer photo of one page.",
+                    code="MENU_SCAN_TIMEOUT",
+                ) from exc
             except Exception as exc:
                 last_error = exc
                 detail = str(exc).strip().lower()
@@ -198,6 +301,17 @@ class MenuScanService:
                     or "404" in detail
                     or "not supported" in detail
                     or "is not found" in detail
+                )
+                retryable_payload = (
+                    "payload" in detail
+                    or "too large" in detail
+                    or "request entity" in detail
+                    or "resource_exhausted" in detail
+                    or "quota" in detail
+                    or "429" in detail
+                    or "503" in detail
+                    or "unavailable" in detail
+                    or "deadline" in detail
                 )
                 if model_missing and model != GEMINI_MODELS[-1]:
                     logger.warning("Gemini model %s unavailable, trying next", model)
@@ -208,6 +322,11 @@ class MenuScanService:
                     hint = "Gemini rejected the API key. Check GEMINI_API_KEY and restart the API."
                 elif model_missing:
                     hint = "Gemini could not use the configured model. Try again later."
+                elif retryable_payload:
+                    hint = (
+                        "That photo was hard for AI to process. "
+                        "Try a sharper, well-lit shot of one page."
+                    )
                 raise ServiceUnavailableError(hint, code="MENU_SCAN_FAILED") from exc
 
         if response is None:
@@ -218,14 +337,32 @@ class MenuScanService:
 
         text = (response.text or "").strip()
         if not text:
-            raise ValidationError("No dishes could be read from that file.")
+            try:
+                candidates = getattr(response, "candidates", None) or []
+                parts: list[str] = []
+                for candidate in candidates:
+                    content = getattr(candidate, "content", None)
+                    for part in getattr(content, "parts", None) or []:
+                        part_text = getattr(part, "text", None)
+                        if part_text:
+                            parts.append(part_text)
+                text = "\n".join(parts).strip()
+            except Exception:
+                text = ""
+        if not text:
+            raise ValidationError(
+                "No dishes could be read from that file. Try a straight, well-lit photo of one page."
+            )
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:
             match = re.search(r"\{[\s\S]*\}", text)
             if not match:
                 raise ValidationError("No dishes could be read from that file.") from None
-            parsed = json.loads(match.group(0))
+            try:
+                parsed = json.loads(match.group(0))
+            except json.JSONDecodeError as exc:
+                raise ValidationError("No dishes could be read from that file.") from exc
         if not isinstance(parsed, dict):
             raise ValidationError("No dishes could be read from that file.")
         return parsed
@@ -339,7 +476,7 @@ async def start_scan(
     if not payload:
         raise ValidationError("That file is empty.")
     if len(payload) > MAX_UPLOAD_BYTES:
-        raise ValidationError("Menu files must be 10 MB or smaller.")
+        raise ValidationError("Menu files must be 20 MB or smaller.")
 
     job = ScanJob(id=uuid.uuid4(), restaurant_id=restaurant_id)
     async with _jobs_lock:
